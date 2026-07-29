@@ -1,0 +1,25 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    container_name: nasflow-web
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+
+  api:
+    build: .
+    container_name: nasflow-api
+    restart: unless-stopped
+    ports:
+      - "8888:8888"
+    environment:
+      - TZ=Asia/Shanghai
+      - NASFLOW_CORS=*
+    volumes:
+      - ./data:/data
+      - /volume1/downloads:/downloads
