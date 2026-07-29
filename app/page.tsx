@@ -1,12 +1,12 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 
 type Task = {
-  id: number;
+  id: number | string;
   title: string;
   source: string;
-  status: "下载中" | "排队中" | "已完成";
+  status: "下载中" | "排队中" | "已完成" | "失败" | "已取消";
   progress: number;
   meta: string;
   tone: string;
@@ -28,12 +28,75 @@ function SourceMark({ tone, label }: { tone: string; label: string }) {
   return <span className={`source-mark ${tone}`}>{label.slice(0, 1)}</span>;
 }
 
+type ApiTask = {
+  id: string;
+  url: string;
+  title: string;
+  engine: string;
+  status: string;
+  progress: number;
+  speed?: string;
+  eta?: string;
+  error?: string;
+  retry_count: number;
+};
+
+const statusLabels: Record<string, Task["status"]> = {
+  queued: "排队中",
+  running: "下载中",
+  completed: "已完成",
+  failed: "失败",
+  cancelled: "已取消",
+};
+
+function getApiBase() {
+  return `${window.location.protocol}//${window.location.hostname}:8888`;
+}
+
+function fromApiTask(item: ApiTask): Task {
+  const host = new URL(item.url).hostname.replace("www.", "");
+  const details = item.error || [item.speed, item.eta ? `剩余 ${item.eta}` : ""].filter(Boolean).join(" · ") || item.engine;
+  return {
+    id: item.id,
+    title: item.title || "等待解析",
+    source: host,
+    status: statusLabels[item.status] || "排队中",
+    progress: item.progress,
+    meta: details,
+    tone: item.status === "failed" ? "red" : item.engine === "gallery-dl" ? "orange" : "violet",
+  };
+}
+
 export default function Home() {
   const [url, setUrl] = useState("");
   const [tasks, setTasks] = useState(initialTasks);
   const [quality, setQuality] = useState("自动选择最佳画质");
   const [notice, setNotice] = useState("");
-  const active = useMemo(() => tasks.filter((task) => task.status !== "已完成").length, [tasks]);
+  const [connected, setConnected] = useState(false);
+  const active = useMemo(() => tasks.filter((task) => task.status === "下载中" || task.status === "排队中").length, [tasks]);
+
+  useEffect(() => {
+    let disposed = false;
+    async function syncTasks() {
+      try {
+        const response = await fetch(`${getApiBase()}/api/tasks`);
+        if (!response.ok) throw new Error("offline");
+        const items = (await response.json()) as ApiTask[];
+        if (!disposed) {
+          setTasks(items.map(fromApiTask));
+          setConnected(true);
+        }
+      } catch {
+        if (!disposed) setConnected(false);
+      }
+    }
+    void syncTasks();
+    const timer = window.setInterval(syncTasks, 3000);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   async function createTask(event: FormEvent) {
     event.preventDefault();
@@ -60,7 +123,7 @@ export default function Home() {
     setTasks((current) => [...current, optimisticTask]);
     setUrl("");
     setNotice("正在提交任务，NASFlow 会自动识别内容类型");
-    const apiBase = `${window.location.protocol}//${window.location.hostname}:8888`;
+    const apiBase = getApiBase();
     const qualityMap: Record<string, string> = {
       "自动选择最佳画质": "best",
       "最高 4K": "4k",
@@ -80,8 +143,22 @@ export default function Home() {
     }
   }
 
-  function removeTask(id: number) {
-    setTasks((current) => current.filter((task) => task.id !== id));
+  async function taskAction(task: Task) {
+    const isRemote = typeof task.id === "string";
+    if (!isRemote) {
+      setTasks((current) => current.filter((item) => item.id !== task.id));
+      return;
+    }
+    const action = task.status === "失败" || task.status === "已取消" ? "retry" : "cancel";
+    try {
+      const response = await fetch(`${getApiBase()}/api/tasks/${task.id}/${action}`, { method: "POST" });
+      if (!response.ok) throw new Error("action failed");
+      const updated = fromApiTask((await response.json()) as ApiTask);
+      setTasks((current) => current.map((item) => item.id === task.id ? updated : item));
+      setNotice(action === "retry" ? "任务已重新加入队列" : "任务已取消");
+    } catch {
+      setNotice("操作未完成，请检查下载服务是否在线");
+    }
   }
 
   return (
@@ -103,7 +180,7 @@ export default function Home() {
           <div className="storage-bar"><i /></div>
           <small>3.4 TB / 5 TB</small>
         </div>
-        <div className="system-state"><i /> 系统运行正常 <span>v0.1.0</span></div>
+        <div className="system-state"><i className={connected ? "" : "offline"} /> {connected ? "下载服务已连接" : "界面预览模式"} <span>v0.2.0</span></div>
       </aside>
 
       <section className="workspace" id="overview">
@@ -141,10 +218,16 @@ export default function Home() {
                 <article className="task" key={task.id}>
                   <SourceMark tone={task.tone} label={task.source} />
                   <div className="task-main">
-                    <div className="task-top"><div><h4>{task.title}</h4><p>{task.source} · {task.meta}</p></div><strong className={task.status === "排队中" ? "queued" : ""}>{task.status === "排队中" ? task.status : `${task.progress}%`}</strong></div>
+                    <div className="task-top"><div><h4>{task.title}</h4><p>{task.source} · {task.meta}</p></div><strong className={task.status === "排队中" ? "queued" : task.status === "失败" ? "failed" : ""}>{task.status === "排队中" || task.status === "失败" || task.status === "已取消" ? task.status : `${task.progress}%`}</strong></div>
                     <div className="progress"><i style={{ width: `${task.progress || 3}%` }} /></div>
                   </div>
-                  <button onClick={() => removeTask(task.id)} aria-label={`移除 ${task.title}`}>×</button>
+                  <button
+                    className={task.status === "失败" || task.status === "已取消" ? "retry-button" : ""}
+                    onClick={() => taskAction(task)}
+                    aria-label={`${task.status === "失败" || task.status === "已取消" ? "重试" : "取消"} ${task.title}`}
+                  >
+                    {task.status === "失败" || task.status === "已取消" ? "↻" : "×"}
+                  </button>
                 </article>
               ))}
               {!tasks.length && <div className="empty">队列空空的，去添加一个喜欢的链接吧。</div>}
@@ -159,6 +242,12 @@ export default function Home() {
               ))}
             </div>
           </div>
+        </section>
+
+        <section className="automation-strip" id="subscriptions">
+          <div><span className="automation-icon">◎</span><div><h3>订阅自动更新</h3><p>按频道、作者或收藏夹定时检查，只下载新增内容。</p></div></div>
+          <div className="automation-pills"><span>更新间隔可调</span><span>自动去重</span><span>独立画质策略</span></div>
+          <button onClick={() => setNotice("订阅 API 已就绪，下一步将接入完整订阅管理页面")}>管理订阅 →</button>
         </section>
 
         <footer><p><i /> NASFlow 服务运行中 · 已连续运行 12 天 8 小时</p><div><span>yt-dlp <b>最新版</b></span><span>gallery-dl <b>最新版</b></span><a href="#help">需要帮助？</a></div></footer>

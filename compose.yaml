@@ -20,6 +20,7 @@ services:
     environment:
       - TZ=Asia/Shanghai
       - NASFLOW_CORS=*
+      - NASFLOW_CONCURRENCY=2
     volumes:
       - ./data:/data
       - /volume1/downloads:/downloads
