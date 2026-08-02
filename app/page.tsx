@@ -49,8 +49,18 @@ const statusLabels: Record<string, Task["status"]> = {
   cancelled: "已取消",
 };
 
+let apiBasePromise: Promise<string> | undefined;
+
 function getApiBase() {
-  return `${window.location.protocol}//${window.location.hostname}:8888`;
+  apiBasePromise ??= fetch("/api-config", { cache: "no-store" })
+    .then(async (response) => {
+      if (!response.ok) throw new Error("config unavailable");
+      const config = (await response.json()) as { apiPort?: string };
+      const port = /^\d{1,5}$/.test(config.apiPort || "") ? config.apiPort : "8888";
+      return `${window.location.protocol}//${window.location.hostname}:${port}`;
+    })
+    .catch(() => `${window.location.protocol}//${window.location.hostname}:8888`);
+  return apiBasePromise;
 }
 
 function fromApiTask(item: ApiTask): Task {
@@ -79,7 +89,8 @@ export default function Home() {
     let disposed = false;
     async function syncTasks() {
       try {
-        const response = await fetch(`${getApiBase()}/api/tasks`);
+        const apiBase = await getApiBase();
+        const response = await fetch(`${apiBase}/api/tasks`);
         if (!response.ok) throw new Error("offline");
         const items = (await response.json()) as ApiTask[];
         if (!disposed) {
@@ -123,7 +134,7 @@ export default function Home() {
     setTasks((current) => [...current, optimisticTask]);
     setUrl("");
     setNotice("正在提交任务，NASFlow 会自动识别内容类型");
-    const apiBase = getApiBase();
+    const apiBase = await getApiBase();
     const qualityMap: Record<string, string> = {
       "自动选择最佳画质": "best",
       "最高 4K": "4k",
@@ -151,7 +162,8 @@ export default function Home() {
     }
     const action = task.status === "失败" || task.status === "已取消" ? "retry" : "cancel";
     try {
-      const response = await fetch(`${getApiBase()}/api/tasks/${task.id}/${action}`, { method: "POST" });
+      const apiBase = await getApiBase();
+      const response = await fetch(`${apiBase}/api/tasks/${task.id}/${action}`, { method: "POST" });
       if (!response.ok) throw new Error("action failed");
       const updated = fromApiTask((await response.json()) as ApiTask);
       setTasks((current) => current.map((item) => item.id === task.id ? updated : item));

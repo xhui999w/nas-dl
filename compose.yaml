@@ -5,6 +5,8 @@ services:
     restart: unless-stopped
     ports:
       - "3000:3000"
+    environment:
+      - NASFLOW_API_PORT=18888
     depends_on:
       api:
         condition: service_healthy
@@ -14,7 +16,7 @@ services:
     container_name: nasflow-api
     restart: unless-stopped
     ports:
-      - "8888:8888"
+      - "18888:8888"
     environment:
       - TZ=Asia/Shanghai
       - NASFLOW_CORS=*

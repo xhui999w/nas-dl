@@ -51,6 +51,17 @@ docker compose up -d
 
 API 健康检查：`http://NAS地址:8888/api/health`
 
+如果宿主机的 `8888` 已被占用，可同时修改 API 端口映射与 Web 环境变量。例如：
+
+```yaml
+web:
+  environment:
+    NASFLOW_API_PORT: 18888
+api:
+  ports:
+    - "18888:8888"
+```
+
 ## 路线图
 
 - 订阅定时调度、增量检测与过滤规则
