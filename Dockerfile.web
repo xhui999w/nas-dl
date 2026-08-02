@@ -6,6 +6,8 @@ RUN npm ci
 COPY app ./app
 COPY public ./public
 COPY worker ./worker
+COPY .openai ./.openai
+COPY build ./build
 COPY next.config.ts vite.config.ts postcss.config.mjs tsconfig.json ./
 RUN npm run build
 EXPOSE 3000
