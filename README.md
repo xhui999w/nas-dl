@@ -5,6 +5,7 @@
 ## 当前能力
 
 - 视频与图集链接自动分流
+- YouTube JavaScript 挑战支持（Deno + yt-dlp-ejs）
 - 下载队列、实时进度和历史记录
 - 任务取消、失败重试与可读错误信息
 - 服务重启后自动恢复未完成任务
@@ -34,11 +35,17 @@ uvicorn server.main:app --reload --port 8888
 
 ## Docker
 
-编辑 `compose.yaml` 中的 NAS 下载目录后执行：
+编辑 `compose.yaml` 中的 NAS 下载目录后执行。镜像同时支持 `amd64` 和 `arm64`：
 
 ```bash
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 ```
+
+镜像：
+
+- `ghcr.io/xhui999w/nas-dl-web:latest`
+- `ghcr.io/xhui999w/nas-dl-api:latest`
 
 控制台：`http://NAS地址:3000`
 

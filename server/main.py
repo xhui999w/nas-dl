@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
+import sys
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -163,7 +165,7 @@ def build_command(task: Task) -> tuple[list[str], Path]:
     target = DOWNLOAD_DIR / safe_folder(task.folder)
     target.mkdir(parents=True, exist_ok=True)
     if task.engine == "gallery-dl":
-        return ["gallery-dl", "--dest", str(target), "--write-metadata", task.url], target
+        return [sys.executable, "-m", "gallery_dl", "--dest", str(target), "--write-metadata", task.url], target
 
     template = str(target / "%(uploader|未知作者)s/%(title)s [%(id)s].%(ext)s")
     formats = {
@@ -173,10 +175,12 @@ def build_command(task: Task) -> tuple[list[str], Path]:
         "audio": "ba/b",
     }
     command = [
-        "yt-dlp", "--newline", "--no-playlist", "--write-info-json",
-        "--write-thumbnail", "--embed-metadata", "-o", template,
+        sys.executable, "-m", "yt_dlp", "--newline", "--no-playlist", "--write-info-json",
+        "--write-thumbnail", "-o", template,
         "-f", formats.get(task.quality, formats["best"]),
     ]
+    if shutil.which("ffmpeg"):
+        command.insert(-4, "--embed-metadata")
     if task.quality == "audio":
         command += ["-x", "--audio-format", "m4a"]
     command.append(task.url)

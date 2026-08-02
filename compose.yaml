@@ -1,8 +1,6 @@
 services:
   web:
-    build:
-      context: .
-      dockerfile: Dockerfile.web
+    image: ghcr.io/xhui999w/nas-dl-web:latest
     container_name: nasflow-web
     restart: unless-stopped
     ports:
@@ -12,7 +10,7 @@ services:
         condition: service_healthy
 
   api:
-    build: .
+    image: ghcr.io/xhui999w/nas-dl-api:latest
     container_name: nasflow-api
     restart: unless-stopped
     ports:
