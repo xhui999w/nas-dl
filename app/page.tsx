@@ -10,18 +10,13 @@ type Task = {
   progress: number;
   meta: string;
   tone: string;
+  backendStatus?: string;
 };
 
 const initialTasks: Task[] = [
   { id: 1, title: "东京雨夜散步 · 4K", source: "YouTube", status: "下载中", progress: 72, meta: "18.4 MB/s · 剩余 1分12秒", tone: "violet" },
   { id: 2, title: "夏日岛屿摄影集", source: "Instagram", status: "下载中", progress: 38, meta: "12 / 31 张 · 原图", tone: "orange" },
   { id: 3, title: "年度科技纪录片", source: "哔哩哔哩", status: "排队中", progress: 0, meta: "等待空闲下载槽位", tone: "blue" },
-];
-
-const finished = [
-  ["山野露营的第七天", "YouTube · 4K · 2.8 GB", "今天 14:28"],
-  ["城市建筑灵感收藏", "小红书 · 46 张 · 384 MB", "今天 12:04"],
-  ["胶片感人像作品集", "Instagram · 22 张 · 176 MB", "昨天 23:17"],
 ];
 
 function SourceMark({ tone, label }: { tone: string; label: string }) {
@@ -74,6 +69,7 @@ function fromApiTask(item: ApiTask): Task {
     progress: item.progress,
     meta: details,
     tone: item.status === "failed" ? "red" : item.engine === "gallery-dl" ? "orange" : "violet",
+    backendStatus: item.status,
   };
 }
 
@@ -83,7 +79,9 @@ export default function Home() {
   const [quality, setQuality] = useState("自动选择最佳画质");
   const [notice, setNotice] = useState("");
   const [connected, setConnected] = useState(false);
-  const active = useMemo(() => tasks.filter((task) => task.status === "下载中" || task.status === "排队中").length, [tasks]);
+  const activeTasks = useMemo(() => tasks.filter((task) => task.status === "下载中" || task.status === "排队中"), [tasks]);
+  const historyTasks = useMemo(() => tasks.filter((task) => task.status !== "下载中" && task.status !== "排队中"), [tasks]);
+  const active = activeTasks.length;
 
   useEffect(() => {
     let disposed = false;
@@ -154,22 +152,51 @@ export default function Home() {
     }
   }
 
-  async function taskAction(task: Task) {
+  async function cancelTask(task: Task) {
     const isRemote = typeof task.id === "string";
     if (!isRemote) {
       setTasks((current) => current.filter((item) => item.id !== task.id));
       return;
     }
-    const action = task.status === "失败" || task.status === "已取消" ? "retry" : "cancel";
     try {
       const apiBase = await getApiBase();
-      const response = await fetch(`${apiBase}/api/tasks/${task.id}/${action}`, { method: "POST" });
+      const response = await fetch(`${apiBase}/api/tasks/${task.id}/cancel`, { method: "POST" });
       if (!response.ok) throw new Error("action failed");
       const updated = fromApiTask((await response.json()) as ApiTask);
       setTasks((current) => current.map((item) => item.id === task.id ? updated : item));
-      setNotice(action === "retry" ? "任务已重新加入队列" : "任务已取消");
+      setNotice("任务已取消，可在历史记录中重试或删除");
     } catch {
       setNotice("操作未完成，请检查下载服务是否在线");
+    }
+  }
+
+  async function retryTask(task: Task) {
+    try {
+      const apiBase = await getApiBase();
+      const response = await fetch(`${apiBase}/api/tasks/${task.id}/retry`, { method: "POST" });
+      if (!response.ok) throw new Error("retry failed");
+      const updated = fromApiTask((await response.json()) as ApiTask);
+      setTasks((current) => current.map((item) => item.id === task.id ? updated : item));
+      setNotice("任务已重新加入队列");
+    } catch {
+      setNotice("重试失败，请检查下载服务是否在线");
+    }
+  }
+
+  async function deleteTask(task: Task) {
+    if (typeof task.id !== "string") {
+      setTasks((current) => current.filter((item) => item.id !== task.id));
+      return;
+    }
+    if (!window.confirm(`确定删除“${task.title}”的任务记录吗？已下载的文件不会被删除。`)) return;
+    try {
+      const apiBase = await getApiBase();
+      const response = await fetch(`${apiBase}/api/tasks/${task.id}`, { method: "DELETE" });
+      if (!response.ok) throw new Error("delete failed");
+      setTasks((current) => current.filter((item) => item.id !== task.id));
+      setNotice("任务记录已删除，下载文件仍保留在 NAS 中");
+    } catch {
+      setNotice("删除失败，请刷新后重试");
     }
   }
 
@@ -226,7 +253,7 @@ export default function Home() {
           <div className="panel task-panel" id="tasks">
             <div className="panel-title"><div><h3>正在进行</h3><span>{active} 个任务</span></div><a href="#tasks">查看全部 →</a></div>
             <div className="task-list">
-              {tasks.map((task) => (
+              {activeTasks.map((task) => (
                 <article className="task" key={task.id}>
                   <SourceMark tone={task.tone} label={task.source} />
                   <div className="task-main">
@@ -234,24 +261,32 @@ export default function Home() {
                     <div className="progress"><i style={{ width: `${task.progress || 3}%` }} /></div>
                   </div>
                   <button
-                    className={task.status === "失败" || task.status === "已取消" ? "retry-button" : ""}
-                    onClick={() => taskAction(task)}
-                    aria-label={`${task.status === "失败" || task.status === "已取消" ? "重试" : "取消"} ${task.title}`}
+                    onClick={() => cancelTask(task)}
+                    aria-label={`取消 ${task.title}`}
                   >
-                    {task.status === "失败" || task.status === "已取消" ? "↻" : "×"}
+                    ×
                   </button>
                 </article>
               ))}
-              {!tasks.length && <div className="empty">队列空空的，去添加一个喜欢的链接吧。</div>}
+              {!activeTasks.length && <div className="empty">当前没有正在进行的任务。</div>}
             </div>
           </div>
 
           <div className="panel recent-panel" id="library">
-            <div className="panel-title"><div><h3>最近完成</h3><span>自动归档至媒体库</span></div><a href="#library">全部记录 →</a></div>
+            <div className="panel-title"><div><h3>历史记录</h3><span>{historyTasks.length} 条记录</span></div><a href="#library">已完成 / 失败 / 已取消</a></div>
             <div className="finished-list">
-              {finished.map(([title, meta, time], index) => (
-                <article key={title}><span className={`finished-cover cover-${index + 1}`}>{index === 0 ? "▶" : index === 1 ? "▤" : "◎"}</span><div><h4>{title}</h4><p>{meta}</p></div><time>{time}</time><b>✓</b></article>
+              {historyTasks.map((task, index) => (
+                <article key={task.id}>
+                  <span className={`finished-cover cover-${index % 3 + 1}`}>{task.source.slice(0, 1)}</span>
+                  <div><h4>{task.title}</h4><p>{task.source} · {task.meta}</p></div>
+                  <time className={`history-status ${task.backendStatus || ""}`}>{task.status}</time>
+                  <div className="history-actions">
+                    {(task.status === "失败" || task.status === "已取消") && <button onClick={() => retryTask(task)} aria-label={`重试 ${task.title}`}>↻</button>}
+                    <button className="delete-button" onClick={() => deleteTask(task)} aria-label={`删除 ${task.title}`}>×</button>
+                  </div>
+                </article>
               ))}
+              {!historyTasks.length && <div className="empty">还没有历史任务。</div>}
             </div>
           </div>
         </section>

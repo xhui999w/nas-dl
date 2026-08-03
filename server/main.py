@@ -176,7 +176,10 @@ def build_command(task: Task) -> tuple[list[str], Path]:
     }
     command = [
         sys.executable, "-m", "yt_dlp", "--newline", "--no-playlist", "--write-info-json",
-        "--write-thumbnail", "-o", template,
+        "--write-thumbnail",
+        "--print", "before_dl:__NASFLOW_TITLE__%(title)s",
+        "--print", "after_move:__NASFLOW_FILE__%(filepath)s",
+        "-o", template,
         "-f", formats.get(task.quality, formats["best"]),
     ]
     if shutil.which("ffmpeg"):
@@ -212,6 +215,12 @@ def run_download(task_id: str) -> None:
             if not line:
                 continue
             append_log(task_id, line)
+            if line.startswith("__NASFLOW_TITLE__"):
+                update_task(task_id, title=line.removeprefix("__NASFLOW_TITLE__").strip())
+                continue
+            if line.startswith("__NASFLOW_FILE__"):
+                update_task(task_id, output_path=line.removeprefix("__NASFLOW_FILE__").strip())
+                continue
             percent, speed, eta = parse_progress(line)
             values: dict[str, object] = {}
             if percent is not None:
