@@ -13,12 +13,6 @@ type Task = {
   backendStatus?: string;
 };
 
-const initialTasks: Task[] = [
-  { id: 1, title: "东京雨夜散步 · 4K", source: "YouTube", status: "下载中", progress: 72, meta: "18.4 MB/s · 剩余 1分12秒", tone: "violet" },
-  { id: 2, title: "夏日岛屿摄影集", source: "Instagram", status: "下载中", progress: 38, meta: "12 / 31 张 · 原图", tone: "orange" },
-  { id: 3, title: "年度科技纪录片", source: "哔哩哔哩", status: "排队中", progress: 0, meta: "等待空闲下载槽位", tone: "blue" },
-];
-
 function SourceMark({ tone, label }: { tone: string; label: string }) {
   return <span className={`source-mark ${tone}`}>{label.slice(0, 1)}</span>;
 }
@@ -35,6 +29,21 @@ type ApiTask = {
   error?: string;
   retry_count: number;
 };
+
+type StorageInfo = {
+  path: string;
+  total: number;
+  used: number;
+  free: number;
+  percent: number;
+};
+
+function formatBytes(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return "0 GB";
+  const units = ["B", "KB", "MB", "GB", "TB", "PB"];
+  const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1);
+  return `${(value / 1024 ** index).toFixed(index >= 4 ? 1 : 0)} ${units[index]}`;
+}
 
 const statusLabels: Record<string, Task["status"]> = {
   queued: "排队中",
@@ -75,24 +84,33 @@ function fromApiTask(item: ApiTask): Task {
 
 export default function Home() {
   const [url, setUrl] = useState("");
-  const [tasks, setTasks] = useState(initialTasks);
+  const [tasks, setTasks] = useState<Task[]>([]);
   const [quality, setQuality] = useState("自动选择最佳画质");
   const [notice, setNotice] = useState("");
   const [connected, setConnected] = useState(false);
+  const [storage, setStorage] = useState<StorageInfo | null>(null);
+  const [activeNav, setActiveNav] = useState("overview");
+  const [menuOpen, setMenuOpen] = useState(false);
   const activeTasks = useMemo(() => tasks.filter((task) => task.status === "下载中" || task.status === "排队中"), [tasks]);
   const historyTasks = useMemo(() => tasks.filter((task) => task.status !== "下载中" && task.status !== "排队中"), [tasks]);
   const active = activeTasks.length;
+  const completed = historyTasks.filter((task) => task.status === "已完成").length;
+  const needsAttention = historyTasks.filter((task) => task.status === "失败" || task.status === "已取消").length;
 
   useEffect(() => {
     let disposed = false;
     async function syncTasks() {
       try {
         const apiBase = await getApiBase();
-        const response = await fetch(`${apiBase}/api/tasks`);
-        if (!response.ok) throw new Error("offline");
-        const items = (await response.json()) as ApiTask[];
+        const [tasksResponse, storageResponse] = await Promise.all([
+          fetch(`${apiBase}/api/tasks`),
+          fetch(`${apiBase}/api/storage`),
+        ]);
+        if (!tasksResponse.ok) throw new Error("offline");
+        const items = (await tasksResponse.json()) as ApiTask[];
         if (!disposed) {
           setTasks(items.map(fromApiTask));
+          if (storageResponse.ok) setStorage((await storageResponse.json()) as StorageInfo);
           setConnected(true);
         }
       } catch {
@@ -106,6 +124,13 @@ export default function Home() {
       window.clearInterval(timer);
     };
   }, []);
+
+  function navigateTo(id: string, message?: string) {
+    setActiveNav(id);
+    setMenuOpen(false);
+    document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (message) setNotice(message);
+  }
 
   async function createTask(event: FormEvent) {
     event.preventDefault();
@@ -202,29 +227,31 @@ export default function Home() {
 
   return (
     <main>
-      <aside className="sidebar">
+      {menuOpen && <button className="menu-backdrop" aria-label="关闭导航" onClick={() => setMenuOpen(false)} />}
+      <aside className={`sidebar ${menuOpen ? "open" : ""}`}>
         <div className="brand"><span className="brand-mark">N</span><span>NAS<span>Flow</span></span></div>
         <nav aria-label="主要导航">
-          <a className="active" href="#overview"><span>⌂</span>概览</a>
-          <a href="#tasks"><span>↓</span>下载任务 <b>{active}</b></a>
-          <a href="#library"><span>▦</span>媒体库</a>
-          <a href="#subscriptions"><span>◎</span>订阅中心</a>
+          <button className={activeNav === "overview" ? "active" : ""} onClick={() => navigateTo("overview")}><span>⌂</span>概览</button>
+          <button className={activeNav === "tasks" ? "active" : ""} onClick={() => navigateTo("tasks")}><span>↓</span>下载任务 <b>{active}</b></button>
+          <button className={activeNav === "library" ? "active" : ""} onClick={() => navigateTo("library")}><span>▦</span>媒体库</button>
+          <button className={activeNav === "subscriptions" ? "active" : ""} onClick={() => navigateTo("subscriptions")}><span>◎</span>订阅中心</button>
           <p>管理</p>
-          <a href="#cookies"><span>◇</span>账号与 Cookies</a>
-          <a href="#notifications"><span>♢</span>通知推送</a>
-          <a href="#settings"><span>⚙</span>系统设置</a>
+          <button onClick={() => navigateTo("overview", "账号与 Cookies 管理功能正在接入，当前可在 Compose 中配置 Cookies 文件")}><span>◇</span>账号与 Cookies</button>
+          <button onClick={() => navigateTo("overview", "通知推送功能即将开放")}><span>♢</span>通知推送</button>
+          <button onClick={() => navigateTo("overview", "系统设置 API 已就绪，图形化设置页即将开放")}><span>⚙</span>系统设置</button>
         </nav>
         <div className="storage-card">
-          <div><span>NAS 存储空间</span><strong>68%</strong></div>
-          <div className="storage-bar"><i /></div>
-          <small>3.4 TB / 5 TB</small>
+          <div><span>下载盘空间</span><strong>{storage ? `${storage.percent}%` : "--"}</strong></div>
+          <div className="storage-bar"><i style={{ width: `${storage?.percent || 0}%` }} /></div>
+          <small>{storage ? `${formatBytes(storage.used)} / ${formatBytes(storage.total)}` : "连接服务后显示真实容量"}</small>
+          {storage && <small className="storage-free">剩余 {formatBytes(storage.free)}</small>}
         </div>
         <div className="system-state"><i className={connected ? "" : "offline"} /> {connected ? "下载服务已连接" : "界面预览模式"} <span>v0.2.0</span></div>
       </aside>
 
       <section className="workspace" id="overview">
         <header>
-          <button className="mobile-menu" aria-label="打开导航">☰</button>
+          <button className="mobile-menu" aria-label="打开导航" onClick={() => setMenuOpen(true)}>☰</button>
           <div><h1>下午好，欢迎回来</h1><p>想收藏点什么？交给 NASFlow 就好。</p></div>
           <div className="header-actions"><button aria-label="查看通知">♢<i /></button><span className="avatar">X</span></div>
         </header>
@@ -244,9 +271,9 @@ export default function Home() {
         </section>
 
         <section className="stats" aria-label="系统统计">
-          <article><div><p>今日已下载</p><strong>24 <small>项</small></strong><em>↗ 12% 较昨日</em></div><span className="stat-icon purple">↓</span></article>
-          <article><div><p>本月新增</p><strong>186 <small>项</small></strong><em>视频 128 · 图片 58</em></div><span className="stat-icon orange">▦</span></article>
-          <article><div><p>节省空间</p><strong>12.8 <small>GB</small></strong><em>智能去重与压缩</em></div><span className="stat-icon green">♧</span></article>
+          <article><div><p>正在处理</p><strong>{active} <small>项</small></strong><em>{connected ? "实时同步下载队列" : "等待连接下载服务"}</em></div><span className="stat-icon purple">↓</span></article>
+          <article><div><p>已完成</p><strong>{completed} <small>项</small></strong><em>来自真实任务记录</em></div><span className="stat-icon orange">▦</span></article>
+          <article><div><p>需要处理</p><strong>{needsAttention} <small>项</small></strong><em>失败或已取消任务</em></div><span className="stat-icon green">!</span></article>
         </section>
 
         <section className="content-grid">

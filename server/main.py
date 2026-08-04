@@ -299,6 +299,20 @@ def health() -> dict[str, object]:
     return {"status": "ok", "version": app.version, "running": running, "concurrency": MAX_WORKERS}
 
 
+@app.get("/api/storage")
+def storage() -> dict[str, int | float | str]:
+    """Return real filesystem usage for the mounted downloads directory."""
+    usage = shutil.disk_usage(DOWNLOAD_DIR)
+    percent = round((usage.used / usage.total) * 100, 1) if usage.total else 0
+    return {
+        "path": str(DOWNLOAD_DIR),
+        "total": usage.total,
+        "used": usage.used,
+        "free": usage.free,
+        "percent": percent,
+    }
+
+
 @app.get("/api/tasks", response_model=list[Task])
 def list_tasks(status: str | None = None) -> list[Task]:
     with Session(engine) as session:
