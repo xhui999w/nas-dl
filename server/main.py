@@ -293,6 +293,7 @@ def run_download(task_id: str) -> None:
             text=True,
             encoding="utf-8",
             errors="replace",
+            env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
         )
         with process_lock:
             processes[task_id] = process
@@ -603,7 +604,15 @@ def list_subscription_entries(subscription_id: str) -> list[SubscriptionEntry]:
     cookie_file = cookie_file_for_url(item.url)
     if cookie_file:
         command[3:3] = ["--cookies", str(cookie_file)]
-    result = subprocess.run(command, capture_output=True, text=True, timeout=90, encoding="utf-8", errors="replace")
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        timeout=90,
+        encoding="utf-8",
+        errors="replace",
+        env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+    )
     if result.returncode != 0:
         raise HTTPException(502, (result.stderr or "读取订阅目录失败")[-600:])
     try:

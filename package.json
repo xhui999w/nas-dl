@@ -6,7 +6,9 @@
     "node": ">=22.13.0"
   },
   "scripts": {
-    "dev": "vinext dev",
+    "dev": "node scripts/dev-local.mjs",
+    "dev:web": "node scripts/dev-local.mjs",
+    "dev:api": "python -m uvicorn server.main:app --reload --host 127.0.0.1 --port 8888",
     "build": "vinext build",
     "start": "vinext start",
     "test": "npm run build && node --test tests/rendered-html.test.mjs",

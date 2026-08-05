@@ -11,6 +11,8 @@ type Task = {
   meta: string;
   tone: string;
   backendStatus?: string;
+  speed?: string;
+  eta?: string;
 };
 
 const demoTasks: Task[] = [
@@ -55,6 +57,7 @@ type Subscription = {
   quality: string;
   folder: string;
   last_checked_at?: string | null;
+  created_at?: string | null;
 };
 
 type SubscriptionEntry = { id: string; title: string; url: string; duration?: number | null; thumbnail?: string | null };
@@ -122,6 +125,8 @@ function fromApiTask(item: ApiTask): Task {
     meta: details,
     tone: item.status === "failed" ? "red" : item.engine === "gallery-dl" ? "orange" : "violet",
     backendStatus: item.status,
+    speed: item.speed,
+    eta: item.eta,
   };
 }
 
@@ -145,17 +150,64 @@ export default function Home() {
   const [subscriptionEntries, setSubscriptionEntries] = useState<SubscriptionEntry[]>([]);
   const [selectedEntries, setSelectedEntries] = useState<Set<string>>(new Set());
   const [entriesLoading, setEntriesLoading] = useState(false);
+  const [showSubscriptionForm, setShowSubscriptionForm] = useState(false);
+  const [downloadDevice, setDownloadDevice] = useState<"computer" | "nas">("computer");
+  const [computerApiUrl, setComputerApiUrl] = useState("http://127.0.0.1:8888");
+  const [nasApiUrl, setNasApiUrl] = useState("http://192.168.31.126:18888");
+  const [deviceRevision, setDeviceRevision] = useState(0);
+  const [taskFilter, setTaskFilter] = useState<"active" | "running" | "queued" | "failed">("active");
   const activeTasks = useMemo(() => tasks.filter((task) => task.status === "下载中" || task.status === "排队中"), [tasks]);
   const historyTasks = useMemo(() => tasks.filter((task) => task.status !== "下载中" && task.status !== "排队中"), [tasks]);
   const active = activeTasks.length;
   const completed = historyTasks.filter((task) => task.status === "已完成").length;
-  const subscriptionPlatforms = useMemo(() => Array.from(new Set(subscriptions.filter((item) => item.enabled).map((item) => subscriptionPlatform(item.url)))), [subscriptions]);
+  const homeTasks = tasks.filter((task) => task.status !== "已完成" && (taskFilter === "active" || (taskFilter === "running" && task.status === "下载中") || (taskFilter === "queued" && task.status === "排队中") || (taskFilter === "failed" && (task.status === "失败" || task.status === "已取消"))));
+  const subscriptionsAddedToday = subscriptions.filter((item) => item.created_at && new Date(item.created_at).toDateString() === new Date().toDateString()).length;
+  const pendingSubscriptions = subscriptions.filter((item) => item.enabled && !item.last_checked_at).length;
+  const latestSubscriptionSync = subscriptions.map((item) => item.last_checked_at).filter(Boolean).sort().at(-1);
+
+  function getSelectedApiBase() {
+    return Promise.resolve((downloadDevice === "nas" ? nasApiUrl : computerApiUrl).replace(/\/$/, ""));
+  }
 
   useEffect(() => {
-    const views = new Set(["overview", "tasks", "library", "subscriptions", "cookies", "notifications", "settings"]);
+    const savedDevice = window.localStorage.getItem("nasflow-download-device");
+    const savedComputerApi = window.localStorage.getItem("nasflow-computer-api");
+    const savedNasApi = window.localStorage.getItem("nasflow-nas-api");
+    if (savedDevice === "nas" || savedDevice === "computer") setDownloadDevice(savedDevice);
+    else if (!['127.0.0.1', 'localhost', '::1'].includes(window.location.hostname)) setDownloadDevice("nas");
+    if (savedComputerApi) setComputerApiUrl(savedComputerApi);
+    if (savedNasApi) setNasApiUrl(savedNasApi);
+    else if (!['127.0.0.1', 'localhost', '::1'].includes(window.location.hostname)) setNasApiUrl(`${window.location.protocol}//${window.location.hostname}:18888`);
+  }, []);
+
+  function changeDownloadDevice(device: "computer" | "nas") {
+    setDownloadDevice(device);
+    setTasks([]);
+    setSubscriptions([]);
+    setStorage(null);
+    setConnected(false);
+    window.localStorage.setItem("nasflow-download-device", device);
+  }
+
+  function saveDeviceAddresses() {
+    try {
+      new URL(computerApiUrl);
+      new URL(nasApiUrl);
+      window.localStorage.setItem("nasflow-computer-api", computerApiUrl.replace(/\/$/, ""));
+      window.localStorage.setItem("nasflow-nas-api", nasApiUrl.replace(/\/$/, ""));
+      setDeviceRevision((value) => value + 1);
+      setConnected(false);
+      setNotice("下载设备地址已保存在当前浏览器");
+    } catch {
+      setNotice("请输入完整地址，例如 http://192.168.31.126:18888");
+    }
+  }
+
+  useEffect(() => {
+    const views = new Set(["overview", "library", "subscriptions", "cookies", "notifications", "settings"]);
     const openHashView = () => {
       const requested = window.location.hash.slice(1);
-      if (views.has(requested)) setActiveNav(requested);
+      setActiveNav(requested === "tasks" ? "overview" : views.has(requested) ? requested : "overview");
     };
     openHashView();
     window.addEventListener("hashchange", openHashView);
@@ -178,7 +230,7 @@ export default function Home() {
     }
     async function syncTasks() {
       try {
-        const apiBase = await getApiBase();
+        const apiBase = await getSelectedApiBase();
         const [tasksResponse, storageResponse, subscriptionsResponse, cookiesResponse, platformsResponse] = await Promise.all([
           fetch(`${apiBase}/api/tasks`),
           fetch(`${apiBase}/api/storage`),
@@ -212,7 +264,7 @@ export default function Home() {
       disposed = true;
       window.clearInterval(timer);
     };
-  }, []);
+  }, [downloadDevice, deviceRevision]);
 
   function navigateTo(id: string, message?: string) {
     setActiveNav(id);
@@ -247,7 +299,7 @@ export default function Home() {
     setTasks((current) => [...current, optimisticTask]);
     setUrl("");
     setNotice("正在提交任务，NASFlow 会自动识别内容类型");
-    const apiBase = await getApiBase();
+    const apiBase = await getSelectedApiBase();
     const qualityMap: Record<string, string> = {
       "自动选择最佳画质": "best",
       "最高 4K": "4k",
@@ -281,7 +333,7 @@ export default function Home() {
       if (demoMode) {
         setSubscriptions((current) => [...current, { id: Date.now(), name, url: targetUrl, enabled: true, interval_minutes: 360, quality: "best", folder: "订阅" }]);
       } else {
-        const apiBase = await getApiBase();
+        const apiBase = await getSelectedApiBase();
         const response = await fetch(`${apiBase}/api/subscriptions`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -293,6 +345,7 @@ export default function Home() {
       }
       setSubscriptionName("");
       setSubscriptionUrl("");
+      setShowSubscriptionForm(false);
       setNotice("订阅已添加，将按设定间隔检查新增内容");
     } catch {
       setNotice("订阅添加失败，请检查链接和下载服务");
@@ -305,7 +358,7 @@ export default function Home() {
       return;
     }
     try {
-      const apiBase = await getApiBase();
+      const apiBase = await getSelectedApiBase();
       const response = await fetch(`${apiBase}/api/subscriptions/${item.id}/toggle`, { method: "PATCH" });
       if (!response.ok) throw new Error("toggle failed");
       const updated = (await response.json()) as Subscription;
@@ -327,7 +380,7 @@ export default function Home() {
       return;
     }
     try {
-      const apiBase = await getApiBase();
+      const apiBase = await getSelectedApiBase();
       const response = await fetch(`${apiBase}/api/subscriptions/${item.id}/sync`, { method: "POST" });
       if (!response.ok) throw new Error("sync failed");
       const task = fromApiTask((await response.json()) as ApiTask);
@@ -352,7 +405,7 @@ export default function Home() {
       return;
     }
     try {
-      const apiBase = await getApiBase();
+      const apiBase = await getSelectedApiBase();
       const suffix = platform ? `?platform=${encodeURIComponent(platform)}` : "";
       const response = await fetch(`${apiBase}/api/subscriptions/sync${suffix}`, { method: "POST" });
       if (!response.ok) throw new Error("sync failed");
@@ -370,7 +423,7 @@ export default function Home() {
     setPlatformSwitches(next);
     if (new URLSearchParams(window.location.search).get("demo") === "1") return;
     try {
-      const apiBase = await getApiBase();
+      const apiBase = await getSelectedApiBase();
       await fetch(`${apiBase}/api/subscription-platforms`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: next }) });
     } catch { setNotice("网站同步开关保存失败"); }
   }
@@ -389,7 +442,7 @@ export default function Home() {
       return;
     }
     try {
-      const apiBase = await getApiBase();
+      const apiBase = await getSelectedApiBase();
       const response = await fetch(`${apiBase}/api/subscriptions/${item.id}/entries`);
       if (!response.ok) throw new Error("load failed");
       setSubscriptionEntries(await response.json());
@@ -407,7 +460,7 @@ export default function Home() {
       return;
     }
     try {
-      const apiBase = await getApiBase();
+      const apiBase = await getSelectedApiBase();
       const response = await fetch(`${apiBase}/api/subscriptions/${browsingSubscription.id}/entries`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ urls }) });
       if (!response.ok) throw new Error("download failed");
       const created = await response.json() as ApiTask[];
@@ -435,7 +488,7 @@ export default function Home() {
       return;
     }
     try {
-      const apiBase = await getApiBase();
+      const apiBase = await getSelectedApiBase();
       const response = await fetch(`${apiBase}/api/cookies`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -481,7 +534,7 @@ export default function Home() {
       return;
     }
     try {
-      const apiBase = await getApiBase();
+      const apiBase = await getSelectedApiBase();
       const response = await fetch(`${apiBase}/api/tasks/${task.id}/cancel`, { method: "POST" });
       if (!response.ok) throw new Error("action failed");
       const updated = fromApiTask((await response.json()) as ApiTask);
@@ -494,7 +547,7 @@ export default function Home() {
 
   async function retryTask(task: Task) {
     try {
-      const apiBase = await getApiBase();
+      const apiBase = await getSelectedApiBase();
       const response = await fetch(`${apiBase}/api/tasks/${task.id}/retry`, { method: "POST" });
       if (!response.ok) throw new Error("retry failed");
       const updated = fromApiTask((await response.json()) as ApiTask);
@@ -512,7 +565,7 @@ export default function Home() {
     }
     if (!window.confirm(`确定删除“${task.title}”的任务记录吗？已下载的文件不会被删除。`)) return;
     try {
-      const apiBase = await getApiBase();
+      const apiBase = await getSelectedApiBase();
       const response = await fetch(`${apiBase}/api/tasks/${task.id}`, { method: "DELETE" });
       if (!response.ok) throw new Error("delete failed");
       setTasks((current) => current.filter((item) => item.id !== task.id));
@@ -528,8 +581,7 @@ export default function Home() {
       <aside className={`sidebar ${menuOpen ? "open" : ""}`}>
         <div className="brand"><span className="brand-mark">N</span><span>NAS<span>Flow</span></span></div>
         <nav aria-label="主要导航">
-          <button className={activeNav === "overview" ? "active" : ""} onClick={() => navigateTo("overview")}><span>⌂</span>概览</button>
-          <button className={activeNav === "tasks" ? "active" : ""} onClick={() => navigateTo("tasks")}><span>↓</span>下载任务 <b>{active}</b></button>
+          <button className={activeNav === "overview" ? "active" : ""} onClick={() => navigateTo("overview")}><span>↓</span>首页（下载中心） <b>{active}</b></button>
           <button className={activeNav === "library" ? "active" : ""} onClick={() => navigateTo("library")}><span>▦</span>媒体库</button>
           <button className={activeNav === "subscriptions" ? "active" : ""} onClick={() => navigateTo("subscriptions")}><span>◎</span>订阅中心</button>
           <p>管理</p>
@@ -543,13 +595,13 @@ export default function Home() {
           <small>{storage ? `${formatBytes(storage.used)} / ${formatBytes(storage.total)}` : "连接服务后显示真实容量"}</small>
           {storage && <small className="storage-free">剩余 {formatBytes(storage.free)}</small>}
         </div>
-        <div className="system-state"><i className={connected ? "" : "offline"} /> {connected ? "下载服务已连接" : "界面预览模式"} <span>v0.2.0</span></div>
+        <div className="system-state"><i className={connected ? "" : "offline"} /> {connected ? `${downloadDevice === "nas" ? "NAS" : "当前电脑"}已连接` : `${downloadDevice === "nas" ? "NAS" : "当前电脑"}未连接`} <span>v0.2.0</span></div>
       </aside>
 
       <section className="workspace" id="overview">
         <header>
           <button className="mobile-menu" aria-label="打开导航" onClick={() => setMenuOpen(true)}>☰</button>
-          <div><h1>{{ overview: "概览", tasks: "下载任务", library: "媒体库", subscriptions: "订阅中心", cookies: "账号与 Cookies", notifications: "通知推送", settings: "系统设置" }[activeNav] || "NASFlow"}</h1><p>{{ overview: "从一个链接开始，把喜欢的内容带回 NAS。", tasks: "查看并控制当前下载队列。", library: "管理已经完成、失败或取消的任务记录。", subscriptions: "自动追踪频道、作者和收藏夹中的新增内容。", cookies: "按网站独立管理登录凭据。", notifications: "集中配置任务和订阅消息提醒。", settings: "调整下载服务与系统偏好。" }[activeNav]}</p></div>
+          <div><h1>{{ overview: "下载中心", library: "媒体库", subscriptions: "订阅中心", cookies: "账号与 Cookies", notifications: "通知推送", settings: "系统设置" }[activeNav] || "NASFlow"}</h1><p>{{ overview: "添加链接、查看进度并管理最近下载。", library: "管理已经完成、失败或取消的任务记录。", subscriptions: "统一管理平台、订阅源和同步状态。", cookies: "按网站独立管理登录凭据。", notifications: "集中配置任务和订阅消息提醒。", settings: "调整下载服务与系统偏好。" }[activeNav]}</p></div>
           <div className="header-actions"><button aria-label="查看通知">♢<i /></button><span className="avatar">X</span></div>
         </header>
 
@@ -560,6 +612,7 @@ export default function Home() {
             <button type="submit">开始下载 <span>→</span></button>
           </form>
           <div className="capture-options">
+            <div className="device-picker" aria-label="下载设备"><span>下载到</span><button className={downloadDevice === "computer" ? "active" : ""} onClick={() => changeDownloadDevice("computer")} type="button">当前电脑</button><button className={downloadDevice === "nas" ? "active" : ""} onClick={() => changeDownloadDevice("nas")} type="button">NAS</button></div>
             <div className="supported"><span className="mini yt">▶</span><span className="mini bilibili">B</span><span className="mini insta">◎</span><span className="mini x">𝕏</span><span className="mini note">R</span><span>支持 1000+ 网站</span></div>
             <label>保存至 <select aria-label="保存目录"><option>/downloads/自动分类</option><option>/downloads/视频</option><option>/downloads/图片</option></select></label>
             <label>画质 <select value={quality} onChange={(e) => setQuality(e.target.value)} aria-label="下载画质"><option>自动选择最佳画质</option><option>最高 4K</option><option>最高 1080P</option><option>仅音频</option></select></label>
@@ -567,36 +620,41 @@ export default function Home() {
           {notice && <p className="notice" role="status">{notice}</p>}
         </section>
 
-        <section className="stats" aria-label="系统统计">
-          <article><div><p>正在处理</p><strong>{active} <small>项</small></strong><em>{connected ? "实时同步下载队列" : "等待连接下载服务"}</em></div><span className="stat-icon purple">↓</span></article>
-          <article><div><p>已完成</p><strong>{completed} <small>项</small></strong><em>来自真实任务记录</em></div><span className="stat-icon orange">▦</span></article>
-        </section></>}
-
-        {(activeNav === "tasks" || activeNav === "library") && <section className="content-grid single-view">
-          {activeNav === "tasks" &&
-          <div className="panel task-panel" id="tasks">
-            <div className="panel-title"><div><h3>正在进行</h3><span>{active} 个任务</span></div><a href="#tasks">查看全部 →</a></div>
+        <section className="panel task-panel download-center-tasks" id="tasks">
+            <div className="panel-title"><div><h3>当前下载</h3><span>{active} 个进行中 · {tasks.length} 个全部任务</span></div><span className={`connection-badge ${connected ? "online" : ""}`}>{connected ? "服务已连接" : "服务未连接"}</span></div>
+            <div className="task-filter-tabs" aria-label="任务状态筛选">{([['active', '进行中', tasks.filter((task) => task.status !== '已完成').length], ['running', '下载中', tasks.filter((task) => task.status === '下载中').length], ['queued', '等待中', tasks.filter((task) => task.status === '排队中').length], ['failed', '失败或取消', tasks.filter((task) => task.status === '失败' || task.status === '已取消').length]] as const).map(([value, label, count]) => <button key={value} className={taskFilter === value ? "active" : ""} onClick={() => setTaskFilter(value)}>{label}<span>{count}</span></button>)}</div>
             <div className="task-list">
-              {activeTasks.map((task) => (
+              {homeTasks.map((task) => (
                 <article className="task" key={task.id}>
                   <SourceMark tone={task.tone} label={task.source} />
                   <div className="task-main">
-                    <div className="task-top"><div><h4>{task.title}</h4><p>{task.source} · {task.meta}</p></div><strong className={task.status === "排队中" ? "queued" : task.status === "失败" ? "failed" : ""}>{task.status === "排队中" || task.status === "失败" || task.status === "已取消" ? task.status : `${task.progress}%`}</strong></div>
+                    <div className="task-top"><div><h4>{task.title}</h4><p>{task.source}</p></div><strong className={task.status === "排队中" ? "queued" : task.status === "失败" ? "failed" : ""}>{task.status === "排队中" || task.status === "失败" || task.status === "已取消" ? task.status : `${task.progress}%`}</strong></div>
                     <div className="progress"><i style={{ width: `${task.progress || 3}%` }} /></div>
+                    <div className="task-details"><span>{task.speed || (task.status === "排队中" ? "等待空闲任务槽" : task.meta)}</span><span>{task.eta ? `剩余 ${task.eta}` : task.status}</span></div>
                   </div>
-                  <button
-                    onClick={() => cancelTask(task)}
-                    aria-label={`取消 ${task.title}`}
-                  >
-                    ×
-                  </button>
+                  <div className="task-row-actions">{(task.status === "失败" || task.status === "已取消") && <button onClick={() => retryTask(task)} aria-label={`重试 ${task.title}`}>↻</button>}{(task.status === "下载中" || task.status === "排队中") && <button onClick={() => cancelTask(task)} aria-label={`取消 ${task.title}`}>×</button>}</div>
                 </article>
               ))}
-              {!activeTasks.length && <div className="empty">当前没有正在进行的任务。</div>}
+              {!homeTasks.length && <div className="empty">当前筛选条件下没有任务。</div>}
             </div>
-          </div>}
+        </section>
 
-          {activeNav === "library" &&
+        <section className="home-bottom-grid">
+          <div className="panel recent-panel home-recent">
+            <div className="panel-title"><div><h3>最近完成</h3><span>{completed} 个已完成</span></div><button onClick={() => navigateTo("library")}>查看媒体库 →</button></div>
+            <div className="finished-list">
+              {historyTasks.filter((task) => task.status === "已完成").slice(0, 4).map((task, index) => <article key={task.id}><span className={`finished-cover cover-${index % 3 + 1}`}>{task.source.slice(0, 1)}</span><div><h4>{task.title}</h4><p>{task.source} · {task.meta}</p></div><time className="history-status completed">已完成</time></article>)}
+              {!completed && <div className="empty compact">还没有完成的下载。</div>}
+            </div>
+          </div>
+          <div className="download-stats">
+            <h3>下载统计</h3>
+            <div><article><span>下载中</span><strong>{tasks.filter((task) => task.status === "下载中").length}</strong></article><article><span>等待中</span><strong>{tasks.filter((task) => task.status === "排队中").length}</strong></article><article><span>已完成</span><strong>{completed}</strong></article><article><span>失败</span><strong>{tasks.filter((task) => task.status === "失败").length}</strong></article></div>
+          </div>
+        </section></>}
+
+        {activeNav === "library" && <section className="content-grid single-view">
+
           <div className="panel recent-panel" id="library">
             <div className="panel-title"><div><h3>历史记录</h3><span>{historyTasks.length} 条记录</span></div><a href="#library">已完成 / 失败 / 已取消</a></div>
             <div className="finished-list">
@@ -613,53 +671,46 @@ export default function Home() {
               ))}
               {!historyTasks.length && <div className="empty">还没有历史任务。</div>}
             </div>
-          </div>}
-        </section>}
-
-        {activeNav === "overview" && <section className="automation-strip" id="subscriptions">
-          <div><span className="automation-icon">◎</span><div><h3>订阅自动更新</h3><p>按频道、作者或收藏夹定时检查，只下载新增内容。</p></div></div>
-          <div className="automation-pills"><span>更新间隔可调</span><span>自动去重</span><span>独立画质策略</span></div>
-          <button onClick={() => navigateTo("subscriptions")}>管理订阅 →</button>
+          </div>
         </section>}
 
         {activeNav === "subscriptions" && (
           <div className="standalone-view subscription-standalone">
             <section className="subscription-dashboard">
               <div className="subscription-heading subscription-center-heading">
-                <div><span>订阅自动化</span><p>添加频道、作者或收藏夹；既可以自动同步，也可以浏览目录后只下载选中的内容。</p></div>
-                <button className="heading-action" onClick={() => syncSubscriptions()}>↻ 更新所有订阅</button>
+                <div><span>订阅中心</span><p>按平台管理频道、作者和收藏夹，自动发现新增内容。</p></div>
+                <div className="subscription-heading-actions"><button onClick={() => setShowSubscriptionForm((value) => !value)}>＋ 添加订阅</button><button className="heading-action" onClick={() => syncSubscriptions()}>↻ 同步全部</button></div>
               </div>
               <section className="platform-settings">
                 <div><h3>更新网站</h3><p>关闭某个平台后，自动同步和“同步全部”都会跳过该网站；仍可进入单个订阅手动挑选内容。</p></div>
                 <div className="platform-switch-list">
-                  {["youtube", "bilibili", "instagram", "x"].map((platform) => <article key={platform}><span className={`platform-logo ${platform}`}>{platform === "youtube" ? "▶" : platform === "bilibili" ? "B" : platform === "instagram" ? "◎" : "X"}</span><div><strong>{platformLabels[platform]}</strong><small>{subscriptions.filter((item) => subscriptionPlatform(item.url) === platform).length} 个订阅</small></div><button className={`subscription-switch ${platformSwitches[platform] ? "on" : ""}`} onClick={() => togglePlatform(platform)} aria-label={`${platformSwitches[platform] ? "关闭" : "开启"}${platformLabels[platform]}同步`} aria-pressed={platformSwitches[platform]}><i /></button></article>)}
+                  {["youtube", "bilibili", "instagram", "x"].map((platform) => <article key={platform}><span className={`platform-logo ${platform}`}>{platform === "youtube" ? "▶" : platform === "bilibili" ? "B" : platform === "instagram" ? "◎" : "X"}</span><div><strong>{platformLabels[platform]}</strong><small>{platformSwitches[platform] ? "已启用" : "已关闭"} · {subscriptions.filter((item) => subscriptionPlatform(item.url) === platform).length} 个订阅</small></div><button className={`subscription-switch ${platformSwitches[platform] ? "on" : ""}`} onClick={() => togglePlatform(platform)} aria-label={`${platformSwitches[platform] ? "关闭" : "开启"}${platformLabels[platform]}同步`} aria-pressed={platformSwitches[platform]}><i /></button></article>)}
                 </div>
               </section>
               <div className="subscription-overview">
                 <article><span>订阅总数</span><strong>{subscriptions.length}</strong><small>个订阅源</small></article>
-                <article><span>正在运行</span><strong>{subscriptions.filter((item) => item.enabled).length}</strong><small>已启用</small></article>
-                <article><span>同步任务</span><strong>{tasks.filter((task) => task.meta.includes("订阅同步")).length}</strong><small>当前记录</small></article>
+                <article><span>今日新增</span><strong>{subscriptionsAddedToday}</strong><small>今天添加</small></article>
+                <article><span>待同步</span><strong>{pendingSubscriptions}</strong><small>尚未运行</small></article>
+                <article><span>最近同步</span><strong className="sync-time">{latestSubscriptionSync ? new Date(latestSubscriptionSync).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" }) : "—"}</strong><small>{latestSubscriptionSync ? new Date(latestSubscriptionSync).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }) : "暂无记录"}</small></article>
               </div>
-              <form className="subscription-form" onSubmit={createSubscription}>
+              {showSubscriptionForm && <form className="subscription-form" onSubmit={createSubscription}>
                 <label>订阅名称<input value={subscriptionName} onChange={(event) => setSubscriptionName(event.target.value)} placeholder="例如：喜欢的科技频道" /></label>
                 <label>频道或收藏夹链接<input value={subscriptionUrl} onChange={(event) => setSubscriptionUrl(event.target.value)} placeholder="https://..." /></label>
                 <button type="submit">添加订阅</button>
-              </form>
-              <div className="subscription-sync-bar">
-                <button className="sync-all" onClick={() => syncSubscriptions()}>↻ 同步全部订阅</button>
-                {subscriptionPlatforms.map((platform) => <button key={platform} onClick={() => syncSubscriptions(platform)}>下载 {platformLabels[platform] || platform} 订阅</button>)}
-              </div>
+              </form>}
               <div className="subscription-list">
-                <div className="subscription-list-title"><h3>已有订阅</h3><span>{subscriptions.length} 个</span></div>
-                <div className="subscription-table-head"><span>平台 / 订阅名称</span><span>同步策略</span><span>上次同步</span><span>操作</span></div>
+                <div className="subscription-list-title"><h3>订阅列表</h3><span>{subscriptions.length} 个</span></div>
+                <div className="subscription-table-head"><span>名称</span><span>平台</span><span>链接</span><span>更新周期</span><span>状态</span><span>操作</span></div>
                 {subscriptions.map((item) => (
                   <article key={item.id}>
-                    <div className="subscription-name"><span className="subscription-source">{(platformLabels[subscriptionPlatform(item.url)] || "站").slice(0, 1)}</span><div><h4>{item.name}</h4><p>{platformLabels[subscriptionPlatform(item.url)] || subscriptionPlatform(item.url)}</p></div></div>
-                    <div className="subscription-policy"><b>{item.quality === "best" ? "最佳画质" : item.quality}</b><span>每 {item.interval_minutes / 60} 小时 · {item.folder}</span></div>
-                    <time>{item.last_checked_at ? new Date(item.last_checked_at).toLocaleString("zh-CN") : "尚未同步"}</time>
+                    <div className="subscription-name"><span className="subscription-source">{(platformLabels[subscriptionPlatform(item.url)] || "站").slice(0, 1)}</span><div><h4>{item.name}</h4><p>{item.last_checked_at ? `最近 ${new Date(item.last_checked_at).toLocaleString("zh-CN")}` : "尚未同步"}</p></div></div>
+                    <span className="platform-cell">{platformLabels[subscriptionPlatform(item.url)] || subscriptionPlatform(item.url)}</span>
+                    <a className="subscription-url" href={item.url} target="_blank" rel="noreferrer">{item.url}</a>
+                    <span className="interval-cell">每 {item.interval_minutes / 60} 小时</span>
+                    <span className={`subscription-status ${item.enabled ? "enabled" : ""}`}>{item.enabled ? "已启用" : "已暂停"}</span>
                     <div className="subscription-item-actions">
                       <button className="browse-one" onClick={() => browseSubscription(item)}>浏览内容</button>
-                      <button className="sync-one" onClick={() => syncSubscription(item)}>全部同步</button>
+                      <button className="sync-one" onClick={() => syncSubscription(item)}>同步</button>
                       <button className={`subscription-switch ${item.enabled ? "on" : ""}`} onClick={() => toggleSubscription(item)} aria-label={`${item.enabled ? "暂停" : "启用"} ${item.name}`} aria-pressed={item.enabled}><i /></button>
                     </div>
                   </article>
@@ -706,7 +757,7 @@ export default function Home() {
         )}
 
         {activeNav === "notifications" && <section className="standalone-view simple-page"><h2>通知推送</h2><p>下载完成、失败以及订阅发现新内容时，都可以在这里统一配置提醒。</p><div className="simple-card"><strong>推送渠道</strong><span>该功能正在接入，后续可独立启用，不会挤在下载页面中。</span></div></section>}
-        {activeNav === "settings" && <section className="standalone-view simple-page"><h2>系统设置</h2><p>下载目录、并发数量、代理与文件命名规则将在这里集中管理。</p><div className="simple-card"><strong>下载服务</strong><span>{connected ? "已连接，运行正常" : "当前为界面预览模式"}</span></div></section>}
+        {activeNav === "settings" && <section className="standalone-view simple-page"><h2>系统设置</h2><p>配置当前电脑与 NAS 下载节点。地址只保存在当前浏览器。</p><div className="device-settings"><label><span>当前电脑 API</span><input value={computerApiUrl} onChange={(event) => setComputerApiUrl(event.target.value)} placeholder="http://127.0.0.1:8888" /></label><label><span>NAS API</span><input value={nasApiUrl} onChange={(event) => setNasApiUrl(event.target.value)} placeholder="http://192.168.31.126:18888" /></label><div className="device-settings-footer"><span><i className={connected ? "online" : ""} />当前选择：{downloadDevice === "nas" ? "NAS" : "当前电脑"} · {connected ? "连接正常" : "无法连接"}</span><button onClick={saveDeviceAddresses}>保存设备地址</button></div></div></section>}
 
         <footer><p><i /> NASFlow 服务运行中 · 已连续运行 12 天 8 小时</p><div><span>yt-dlp <b>最新版</b></span><span>gallery-dl <b>最新版</b></span><a href="#help">需要帮助？</a></div></footer>
       </section>

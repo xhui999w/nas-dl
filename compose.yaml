@@ -23,4 +23,4 @@ services:
       - NASFLOW_CONCURRENCY=2
     volumes:
       - ./data:/data
-      - /volume1/downloads:/downloads
+      - /volume2/盘2/media/nas-dl:/downloads
