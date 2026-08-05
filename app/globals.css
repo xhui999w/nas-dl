@@ -74,7 +74,7 @@ header p { margin: 0; color: var(--muted); font-size: 12px; }
 .capture-options option { color: var(--ink); }
 .notice { position: relative; z-index: 1; margin: 13px 0 0; padding-top: 12px; border-top: 1px solid #ffffff24; color: #fff; font-size: 11px; }
 
-.stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin: 18px 0; }
+.stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px; margin: 18px 0; }
 .stats article { display: flex; justify-content: space-between; align-items: center; min-height: 104px; padding: 20px 22px; border: 1px solid var(--line); border-radius: 16px; background: white; box-shadow: 0 8px 24px rgba(38, 36, 58, .035); }
 .stats p { margin: 0 0 7px; color: #898792; font-size: 11px; }
 .stats strong { display: block; margin-bottom: 6px; font-size: 22px; letter-spacing: -.7px; }
@@ -87,6 +87,8 @@ header p { margin: 0; color: var(--muted); font-size: 12px; }
 .stat-icon.green { color: #3bb482; background: #e8f8f1; }
 
 .content-grid { display: grid; grid-template-columns: 1.35fr 1fr; gap: 16px; }
+.content-grid.single-view { grid-template-columns: 1fr; }
+.content-grid.single-view .panel { min-height: 540px; }
 .panel { min-width: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 15px; background: white; }
 .panel-title { display: flex; align-items: center; justify-content: space-between; padding: 18px 21px 15px; border-bottom: 1px solid #f1f0f4; }
 .panel-title > div { display: flex; align-items: center; gap: 9px; }
@@ -139,6 +141,129 @@ header p { margin: 0; color: var(--muted); font-size: 12px; }
 .automation-pills span { padding: 7px 9px; border-radius: 20px; background: #f7f6fa; color: #7f7d89; font-size: 9px; }
 .automation-strip button { border: 0; border-radius: 9px; padding: 9px 13px; background: #2a2834; color: white; font-size: 9px; }
 
+.subscription-modal { position: fixed; z-index: 50; inset: 0; }
+.subscription-backdrop { position: absolute; inset: 0; width: 100%; border: 0; background: rgba(24, 22, 42, .4); backdrop-filter: blur(4px); }
+.subscription-drawer { position: absolute; top: 0; right: 0; width: min(520px, 100%); height: 100%; overflow-y: auto; padding: 30px; background: #fff; box-shadow: -24px 0 60px rgba(28, 25, 55, .18); animation: drawer-in .22s ease-out; }
+.subscription-dashboard { width: min(900px, 100%); background: #f7f8fc; }
+.standalone-view { min-height: 620px; animation: page-in .22s ease-out; }
+.subscription-standalone { padding: 26px; border: 1px solid var(--line); border-radius: 20px; background: #f7f8fc; }
+.subscription-standalone .subscription-dashboard { width: 100%; background: transparent; }
+.subscription-standalone .subscription-heading { padding: 0 0 22px; }
+.subscription-center-heading { align-items: center; }
+.subscription-center-heading p { max-width: 680px; margin-top: 7px; line-height: 1.7; }
+.subscription-heading > button.heading-action { width: auto; height: 38px; padding: 0 14px; background: var(--purple); color: white; font-size: 10px; }
+.cookie-page { width: 100%; padding: 26px; border: 1px solid var(--line); border-radius: 20px; background: white; }
+.simple-page { padding: 30px; border: 1px solid var(--line); border-radius: 20px; background: white; }
+.simple-page h2 { margin: 0 0 8px; font-size: 22px; }
+.simple-page > p { margin: 0 0 24px; color: var(--muted); font-size: 11px; }
+.simple-card { display: flex; justify-content: space-between; gap: 18px; padding: 22px; border: 1px solid var(--line); border-radius: 14px; background: #fafafe; font-size: 11px; }
+.simple-card span { color: var(--muted); }
+@keyframes page-in { from { transform: translateY(7px); opacity: .4; } }
+@keyframes drawer-in { from { transform: translateX(30px); opacity: .5; } }
+.subscription-heading { display: flex; justify-content: space-between; gap: 20px; padding-bottom: 24px; border-bottom: 1px solid var(--line); }
+.subscription-heading span { color: var(--purple); font-size: 10px; font-weight: 700; letter-spacing: 1px; }
+.subscription-heading h2 { margin: 5px 0 7px; font-size: 24px; }
+.subscription-heading p { margin: 0; color: var(--muted); font-size: 11px; }
+.subscription-heading > button { width: 34px; height: 34px; border: 0; border-radius: 10px; background: #f5f4f8; color: #777582; font-size: 20px; }
+.subscription-form { display: grid; gap: 14px; margin: 24px 0; padding: 20px; border-radius: 16px; background: #f7f7fb; }
+.subscription-dashboard .subscription-form { grid-template-columns: 1fr 1.5fr auto; align-items: end; background: white; border: 1px solid var(--line); }
+.subscription-dashboard .subscription-form > button { min-width: 110px; }
+.subscription-overview { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 22px 0; }
+.platform-settings { margin-top: 22px; padding: 19px; border: 1px solid var(--line); border-radius: 16px; background: white; }
+.platform-settings > div:first-child h3 { margin: 0 0 5px; font-size: 14px; }
+.platform-settings > div:first-child p { margin: 0; color: var(--muted); font-size: 9px; }
+.platform-switch-list { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 16px; }
+.platform-switch-list article { display: grid; grid-template-columns: auto 1fr auto; gap: 9px; align-items: center; padding: 12px; border: 1px solid #eceaf1; border-radius: 12px; }
+.platform-logo { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 9px; background: #f1efff; color: var(--purple); font-size: 11px; font-weight: 800; }
+.platform-logo.youtube { background: #fff0f0; color: #f03838; }
+.platform-logo.bilibili { background: #eef8ff; color: #30a4dc; }
+.platform-switch-list strong, .platform-switch-list small { display: block; font-size: 10px; }
+.platform-switch-list small { margin-top: 4px; color: var(--muted); font-size: 8px; }
+.subscription-insights { display: grid; grid-template-columns: minmax(0, 1.8fr) minmax(230px, .8fr); gap: 14px; margin: 22px 0 0; }
+.trend-card, .sync-summary { padding: 20px; border: 1px solid var(--line); border-radius: 16px; background: white; }
+.trend-card > div:first-child { display: flex; justify-content: space-between; color: var(--muted); font-size: 10px; }
+.trend-card small { font-size: 9px; }
+.trend-card small i { display: inline-block; width: 6px; height: 6px; margin-right: 4px; border-radius: 50%; background: #9e91ff; }
+.trend-card small i:first-child { background: #55a4ff; }
+.trend-chart { display: flex; align-items: end; gap: 8%; height: 118px; margin: 20px 8px 8px; border-bottom: 1px solid #e7e5ee; background: repeating-linear-gradient(to bottom, transparent 0 38px, #f2f1f6 39px); }
+.trend-chart b { flex: 1; min-height: 8px; border-radius: 5px 5px 0 0; background: linear-gradient(#9484ff, #6250e8); opacity: .9; }
+.trend-days { display: flex; justify-content: space-between; color: #aaa8b2; font-size: 8px; }
+.sync-summary { display: grid; grid-template-columns: 1fr 1fr; align-content: start; }
+.sync-summary > div { padding: 4px 14px 18px 0; border-bottom: 1px solid #f0eff4; }
+.sync-summary > div + div { padding-left: 14px; border-left: 1px solid #f0eff4; }
+.sync-summary span { display: block; color: var(--muted); font-size: 9px; }
+.sync-summary strong { display: block; margin-top: 7px; color: var(--purple); font-size: 26px; }
+.sync-summary strong em { color: #bbb8c3; font-style: normal; }
+.sync-summary strong.danger { color: #f04e6b; }
+.sync-summary p { grid-column: 1 / -1; display: flex; justify-content: space-between; margin: 15px 0 0; font-size: 9px; }
+.sync-summary p b { font-weight: 600; }
+.subscription-overview article { padding: 18px; border: 1px solid var(--line); border-radius: 15px; background: white; }
+.subscription-overview span, .subscription-overview small { display: block; color: var(--muted); font-size: 9px; }
+.subscription-overview strong { display: block; margin: 8px 0 5px; font-size: 25px; }
+.subscription-form label { display: grid; gap: 7px; color: #666471; font-size: 11px; }
+.subscription-form input { height: 42px; padding: 0 12px; border: 1px solid #e4e2eb; border-radius: 10px; outline: none; background: white; }
+.subscription-form input:focus { border-color: #9b8ff4; box-shadow: 0 0 0 3px #eeeaff; }
+.subscription-form > button { height: 42px; border: 0; border-radius: 10px; background: var(--purple); color: white; font-size: 12px; font-weight: 650; }
+.subscription-list-title { display: flex; align-items: center; gap: 8px; }
+.subscription-list-title h3 { margin: 0; font-size: 14px; }
+.subscription-list-title span { color: var(--muted); font-size: 10px; }
+.subscription-dashboard .subscription-list { padding: 18px; border: 1px solid var(--line); border-radius: 16px; background: white; }
+.subscription-table-head, .subscription-list article { display: grid; grid-template-columns: 1.4fr 1fr .8fr minmax(215px, auto); gap: 14px; align-items: center; }
+.subscription-table-head { margin-top: 14px; padding: 10px 0; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 9px; }
+.subscription-list article { padding: 17px 0; border-bottom: 1px solid #f0eff4; }
+.subscription-name { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.subscription-policy { display: grid; gap: 4px; }
+.subscription-policy b { font-size: 10px; }
+.subscription-policy span, .subscription-list time { color: var(--muted); font-size: 9px; }
+.subscription-sync-bar { display: flex; flex-wrap: wrap; gap: 7px; margin: -8px 0 22px; }
+.subscription-sync-bar button { min-height: 34px; padding: 0 11px; border: 1px solid #e4e1f5; border-radius: 9px; background: #faf9ff; color: var(--purple); font-size: 9px; }
+.subscription-sync-bar button.sync-all { border-color: var(--purple); background: var(--purple); color: white; }
+.subscription-item-actions { display: flex; align-items: center; gap: 9px; }
+.subscription-item-actions .sync-one { height: 30px; padding: 0 10px; border: 0; border-radius: 8px; background: var(--soft-purple); color: var(--purple); font-size: 9px; }
+.subscription-item-actions .browse-one { height: 30px; padding: 0 10px; border: 1px solid #ddd9f5; border-radius: 8px; background: white; color: #5e5874; font-size: 9px; }
+.entry-browser { margin-top: 18px; overflow: hidden; border: 1px solid var(--line); border-radius: 16px; background: white; }
+.entry-browser-heading { display: flex; justify-content: space-between; padding: 18px 20px; border-bottom: 1px solid var(--line); }
+.entry-browser-heading span { color: var(--purple); font-size: 9px; font-weight: 700; }
+.entry-browser-heading h3 { margin: 4px 0; font-size: 15px; }
+.entry-browser-heading p { margin: 0; color: var(--muted); font-size: 9px; }
+.entry-browser-heading button { width: 30px; height: 30px; border: 0; border-radius: 8px; background: #f3f2f6; color: #777582; }
+.entry-list { max-height: 390px; overflow-y: auto; }
+.entry-list label { display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 12px 20px; border-bottom: 1px solid #f1f0f4; cursor: pointer; }
+.entry-cover { display: grid; place-items: center; width: 48px; height: 34px; border-radius: 8px; background: linear-gradient(145deg, #8371f5, #5043c9); color: white; font-size: 9px; }
+.entry-list strong, .entry-list small { display: block; }
+.entry-list strong { overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.entry-list small { margin-top: 5px; color: var(--muted); font-size: 8px; }
+.entry-list a { color: var(--purple); font-size: 9px; }
+.entry-actions { display: flex; align-items: center; gap: 12px; padding: 14px 20px; background: #fafafe; }
+.entry-actions span { margin-left: auto; color: var(--muted); font-size: 9px; }
+.entry-actions button { height: 34px; padding: 0 12px; border: 1px solid #ddd9ea; border-radius: 8px; background: white; color: #615e6d; font-size: 9px; }
+.entry-actions button.primary { border-color: var(--purple); background: var(--purple); color: white; }
+.subscription-source { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 12px; background: var(--soft-purple); color: var(--purple); }
+.subscription-list h4 { margin: 0 0 5px; font-size: 12px; }
+.subscription-list p { margin: 0; color: var(--muted); font-size: 9px; }
+.subscription-switch { position: relative; width: 38px; height: 22px; padding: 0; border: 0; border-radius: 20px; background: #d9d7df; transition: .2s; }
+.subscription-switch i { position: absolute; left: 3px; top: 3px; width: 16px; height: 16px; border-radius: 50%; background: white; box-shadow: 0 2px 5px #0002; transition: .2s; }
+.subscription-switch.on { background: var(--purple); }
+.subscription-switch.on i { transform: translateX(16px); }
+.cookie-drawer { width: min(680px, 100%); }
+.cookie-security { margin: 20px 0; padding: 13px 15px; border: 1px solid #f2d8ae; border-radius: 12px; background: #fff9ed; color: #8a6427; font-size: 10px; line-height: 1.6; }
+.cookie-import-card { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 18px; padding: 16px; border: 1px solid #ddd9f5; border-radius: 13px; background: #faf9ff; }
+.cookie-import-card strong { font-size: 12px; }
+.cookie-import-card p { max-width: 390px; margin: 5px 0 0; color: var(--muted); font-size: 9px; line-height: 1.6; }
+.cookie-import-card label { position: relative; flex: none; padding: 10px 13px; border-radius: 9px; background: var(--purple); color: white; font-size: 10px; cursor: pointer; }
+.cookie-import-card input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.cookie-table { overflow: hidden; border: 1px solid var(--line); border-radius: 13px; }
+.cookie-table-head, .cookie-row { display: grid; grid-template-columns: 180px minmax(0, 1fr) 34px; gap: 8px; align-items: center; }
+.cookie-table-head { padding: 10px 12px; background: #f7f7fa; color: #8d8b96; font-size: 9px; }
+.cookie-row { padding: 10px 12px; border-top: 1px solid #f0eff4; }
+.cookie-row input { min-width: 0; height: 39px; padding: 0 10px; border: 1px solid #e5e3eb; border-radius: 9px; outline: 0; font-size: 11px; }
+.cookie-row input:focus { border-color: #9b8ff4; box-shadow: 0 0 0 3px #eeeaff; }
+.cookie-row button { width: 30px; height: 30px; border: 0; border-radius: 8px; background: #fff0f0; color: #c84b4b; }
+.add-cookie-row { width: 100%; height: 42px; margin-top: 12px; border: 1px dashed #cbc6eb; border-radius: 10px; background: #faf9ff; color: var(--purple); font-size: 11px; }
+.cookie-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 24px; }
+.cookie-actions button { height: 40px; padding: 0 16px; border: 0; border-radius: 10px; background: #f1f0f5; color: #696775; font-size: 11px; }
+.cookie-actions button.primary { background: var(--purple); color: white; }
+
 footer { display: flex; justify-content: space-between; padding: 17px 4px 0; color: #9997a1; font-size: 9px; }
 footer p, footer div { display: flex; align-items: center; gap: 8px; margin: 0; }
 footer div { gap: 20px; }
@@ -183,4 +308,17 @@ footer a { color: var(--purple); }
   .automation-strip > div:first-child { min-width: 0; }
   .automation-strip button { margin-left: 51px; }
   footer div { flex-wrap: wrap; }
+  .cookie-table-head { display: none; }
+  .cookie-row { grid-template-columns: 1fr 34px; }
+  .cookie-row input:first-child { grid-column: 1 / -1; }
+  .subscription-dashboard .subscription-form { grid-template-columns: 1fr; }
+  .subscription-overview { grid-template-columns: 1fr 1fr; }
+  .subscription-insights { grid-template-columns: 1fr; }
+  .platform-switch-list { grid-template-columns: 1fr 1fr; }
+  .subscription-table-head { display: none; }
+  .subscription-list article { grid-template-columns: 1fr auto; }
+  .subscription-policy, .subscription-list time { grid-column: 1; }
+  .subscription-item-actions { grid-column: 2; grid-row: 1 / span 3; }
+  .subscription-item-actions { align-items: flex-end; flex-direction: column; }
+  .cookie-import-card { align-items: flex-start; flex-direction: column; }
 }

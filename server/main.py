@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import shutil
@@ -55,6 +56,7 @@ class Task(SQLModel, table=True):
     folder: str = "自动分类"
     retry_count: int = 0
     log_tail: str = ""
+    subscription_id: str | None = None
     created_at: datetime = DBField(default_factory=utcnow)
     updated_at: datetime = DBField(default_factory=utcnow)
 
@@ -99,6 +101,31 @@ class SettingsPayload(BaseModel):
     proxy: str = ""
 
 
+class CookieRule(BaseModel):
+    domain: str = Field(min_length=3, max_length=253)
+    cookie: str = Field(min_length=1, max_length=32768)
+
+
+class CookiesPayload(BaseModel):
+    rules: list[CookieRule] = Field(default_factory=list, max_length=100)
+
+
+class PlatformSyncPayload(BaseModel):
+    enabled: dict[str, bool] = Field(default_factory=dict)
+
+
+class SubscriptionEntry(BaseModel):
+    id: str
+    title: str
+    url: str
+    duration: int | None = None
+    thumbnail: str | None = None
+
+
+class DownloadEntriesPayload(BaseModel):
+    urls: list[str] = Field(min_length=1, max_length=200)
+
+
 app = FastAPI(title="NASFlow API", version="0.2.0")
 app.add_middleware(
     CORSMiddleware,
@@ -127,6 +154,49 @@ def choose_engine(url: str, kind: str) -> str:
     host = (urlparse(url).hostname or "").lower()
     gallery_hosts = ("instagram.com", "x.com", "twitter.com", "pixiv.net", "flickr.com")
     return "gallery-dl" if any(item in host for item in gallery_hosts) else "yt-dlp"
+
+
+def platform_for_url(url: str) -> str:
+    host = (urlparse(url).hostname or "").lower()
+    if "bilibili.com" in host or "b23.tv" in host:
+        return "bilibili"
+    if "youtube.com" in host or "youtu.be" in host:
+        return "youtube"
+    if "instagram.com" in host:
+        return "instagram"
+    if host == "x.com" or host.endswith(".x.com") or "twitter.com" in host:
+        return "x"
+    return host.removeprefix("www.")
+
+
+def cookie_file_for_url(url: str) -> Path | None:
+    host = (urlparse(url).hostname or "").lower().strip(".")
+    with Session(engine) as session:
+        row = session.get(Setting, "cookies")
+    if not row:
+        return None
+    try:
+        payload = CookiesPayload.model_validate_json(row.value)
+    except Exception:
+        return None
+    match = next((rule for rule in payload.rules if host == rule.domain or host.endswith(f".{rule.domain}")), None)
+    if not match:
+        return None
+    cookie_dir = DATA_DIR / "cookies"
+    cookie_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    cookie_path = cookie_dir / f"{hashlib.sha256(match.domain.encode()).hexdigest()[:16]}.txt"
+    lines = ["# Netscape HTTP Cookie File"]
+    for part in match.cookie.replace("\r", "").replace("\n", "").split(";"):
+        if "=" not in part:
+            continue
+        name, value = part.strip().split("=", 1)
+        if name:
+            lines.append(f".{match.domain}\tTRUE\t/\tTRUE\t2147483647\t{name}\t{value}")
+    if len(lines) == 1:
+        return None
+    cookie_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    cookie_path.chmod(0o600)
+    return cookie_path
 
 
 def update_task(task_id: str, **values: object) -> None:
@@ -164,8 +234,17 @@ def parse_progress(line: str) -> tuple[float | None, str | None, str | None]:
 def build_command(task: Task) -> tuple[list[str], Path]:
     target = DOWNLOAD_DIR / safe_folder(task.folder)
     target.mkdir(parents=True, exist_ok=True)
+    cookie_file = cookie_file_for_url(task.url)
     if task.engine == "gallery-dl":
-        return [sys.executable, "-m", "gallery_dl", "--dest", str(target), "--write-metadata", task.url], target
+        command = [sys.executable, "-m", "gallery_dl", "--dest", str(target), "--write-metadata"]
+        if task.subscription_id:
+            archive_dir = DATA_DIR / "archives"
+            archive_dir.mkdir(parents=True, exist_ok=True)
+            command += ["--download-archive", str(archive_dir / f"{task.subscription_id}.txt")]
+        if cookie_file:
+            command += ["--cookies", str(cookie_file)]
+        command.append(task.url)
+        return command, target
 
     template = str(target / "%(uploader|未知作者)s/%(title)s [%(id)s].%(ext)s")
     formats = {
@@ -175,17 +254,25 @@ def build_command(task: Task) -> tuple[list[str], Path]:
         "audio": "ba/b",
     }
     command = [
-        sys.executable, "-m", "yt_dlp", "--newline", "--no-playlist", "--write-info-json",
+        sys.executable, "-m", "yt_dlp", "--newline", "--write-info-json",
         "--write-thumbnail",
         "--print", "before_dl:__NASFLOW_TITLE__%(title)s",
         "--print", "after_move:__NASFLOW_FILE__%(filepath)s",
         "-o", template,
         "-f", formats.get(task.quality, formats["best"]),
     ]
+    if task.subscription_id:
+        archive_dir = DATA_DIR / "archives"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        command += ["--download-archive", str(archive_dir / f"{task.subscription_id}.txt"), "--lazy-playlist"]
+    else:
+        command.append("--no-playlist")
     if shutil.which("ffmpeg"):
         command.insert(-4, "--embed-metadata")
     if task.quality == "audio":
         command += ["-x", "--audio-format", "m4a"]
+    if cookie_file:
+        command += ["--cookies", str(cookie_file)]
     command.append(task.url)
     return command, target
 
@@ -261,6 +348,7 @@ def migrate_schema() -> None:
         "folder": "TEXT NOT NULL DEFAULT '自动分类'",
         "retry_count": "INTEGER NOT NULL DEFAULT 0",
         "log_tail": "TEXT NOT NULL DEFAULT ''",
+        "subscription_id": "TEXT",
     }
     with engine.begin() as connection:
         for name, definition in additions.items():
@@ -421,6 +509,56 @@ def create_subscription(payload: CreateSubscription) -> Subscription:
         return item
 
 
+def create_subscription_sync_task(item: Subscription) -> Task:
+    task = Task(
+        url=item.url,
+        title=f"同步订阅 · {item.name}",
+        engine=choose_engine(item.url, "auto"),
+        quality=item.quality,
+        folder=item.folder,
+        subscription_id=item.id,
+    )
+    with Session(engine) as session:
+        session.add(task)
+        stored = session.get(Subscription, item.id)
+        if stored:
+            stored.last_checked_at = utcnow()
+            session.add(stored)
+        session.commit()
+        session.refresh(task)
+    dispatch(task.id)
+    return task
+
+
+@app.post("/api/subscriptions/sync", response_model=list[Task])
+def sync_subscriptions(platform: str | None = None) -> list[Task]:
+    with Session(engine) as session:
+        items = list(session.exec(select(Subscription).where(Subscription.enabled == True)).all())  # noqa: E712
+    if platform:
+        items = [item for item in items if platform_for_url(item.url) == platform]
+    with Session(engine) as session:
+        platform_row = session.get(Setting, "subscription_platforms")
+    if platform_row:
+        try:
+            switches = PlatformSyncPayload.model_validate_json(platform_row.value).enabled
+            items = [item for item in items if switches.get(platform_for_url(item.url), True)]
+        except Exception:
+            pass
+    if not items:
+        raise HTTPException(404, "没有符合条件的已启用订阅")
+    return [create_subscription_sync_task(item) for item in items]
+
+
+@app.post("/api/subscriptions/{subscription_id}/sync", response_model=Task)
+def sync_subscription(subscription_id: str) -> Task:
+    with Session(engine) as session:
+        item = session.get(Subscription, subscription_id)
+        if not item:
+            raise HTTPException(404, "订阅不存在")
+        session.expunge(item)
+    return create_subscription_sync_task(item)
+
+
 @app.patch("/api/subscriptions/{subscription_id}/toggle", response_model=Subscription)
 def toggle_subscription(subscription_id: str) -> Subscription:
     with Session(engine) as session:
@@ -432,6 +570,72 @@ def toggle_subscription(subscription_id: str) -> Subscription:
         session.commit()
         session.refresh(item)
         return item
+
+
+@app.get("/api/subscription-platforms", response_model=PlatformSyncPayload)
+def get_subscription_platforms() -> PlatformSyncPayload:
+    with Session(engine) as session:
+        row = session.get(Setting, "subscription_platforms")
+    return PlatformSyncPayload.model_validate_json(row.value) if row else PlatformSyncPayload()
+
+
+@app.put("/api/subscription-platforms", response_model=PlatformSyncPayload)
+def save_subscription_platforms(payload: PlatformSyncPayload) -> PlatformSyncPayload:
+    allowed = {str(key)[:60]: bool(value) for key, value in payload.enabled.items()}
+    saved = PlatformSyncPayload(enabled=allowed)
+    with Session(engine) as session:
+        row = session.get(Setting, "subscription_platforms") or Setting(key="subscription_platforms", value="")
+        row.value = saved.model_dump_json()
+        row.updated_at = utcnow()
+        session.add(row)
+        session.commit()
+    return saved
+
+
+@app.get("/api/subscriptions/{subscription_id}/entries", response_model=list[SubscriptionEntry])
+def list_subscription_entries(subscription_id: str) -> list[SubscriptionEntry]:
+    with Session(engine) as session:
+        item = session.get(Subscription, subscription_id)
+        if not item:
+            raise HTTPException(404, "订阅不存在")
+        session.expunge(item)
+    command = [sys.executable, "-m", "yt_dlp", "--flat-playlist", "--dump-single-json", "--playlist-end", "100", item.url]
+    cookie_file = cookie_file_for_url(item.url)
+    if cookie_file:
+        command[3:3] = ["--cookies", str(cookie_file)]
+    result = subprocess.run(command, capture_output=True, text=True, timeout=90, encoding="utf-8", errors="replace")
+    if result.returncode != 0:
+        raise HTTPException(502, (result.stderr or "读取订阅目录失败")[-600:])
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(502, "订阅目录解析失败") from exc
+    entries: list[SubscriptionEntry] = []
+    for entry in data.get("entries") or []:
+        entry_url = entry.get("webpage_url") or entry.get("url")
+        if not entry_url or not str(entry_url).startswith(("http://", "https://")):
+            continue
+        entries.append(SubscriptionEntry(id=str(entry.get("id") or entry_url), title=str(entry.get("title") or "未命名内容"), url=str(entry_url), duration=entry.get("duration"), thumbnail=entry.get("thumbnail")))
+    return entries
+
+
+@app.post("/api/subscriptions/{subscription_id}/entries", response_model=list[Task], status_code=201)
+def download_subscription_entries(subscription_id: str, payload: DownloadEntriesPayload) -> list[Task]:
+    with Session(engine) as session:
+        item = session.get(Subscription, subscription_id)
+        if not item:
+            raise HTTPException(404, "订阅不存在")
+        tasks = [Task(url=url, title=f"订阅选取 · {item.name}", engine=choose_engine(url, "auto"), quality=item.quality, folder=item.folder, subscription_id=item.id) for url in payload.urls if valid_url(url)]
+        if not tasks:
+            raise HTTPException(422, "没有有效的内容链接")
+        for task in tasks:
+            session.add(task)
+        session.commit()
+        for task in tasks:
+            session.refresh(task)
+    for task in tasks:
+        dispatch(task.id)
+    return tasks
 
 
 @app.get("/api/settings", response_model=SettingsPayload)
@@ -452,3 +656,32 @@ def save_settings(payload: SettingsPayload) -> SettingsPayload:
         session.add(row)
         session.commit()
     return payload
+
+
+@app.get("/api/cookies", response_model=CookiesPayload)
+def get_cookies() -> CookiesPayload:
+    with Session(engine) as session:
+        row = session.get(Setting, "cookies")
+        return CookiesPayload.model_validate_json(row.value) if row else CookiesPayload()
+
+
+@app.put("/api/cookies", response_model=CookiesPayload)
+def save_cookies(payload: CookiesPayload) -> CookiesPayload:
+    normalized: list[CookieRule] = []
+    seen: set[str] = set()
+    for rule in payload.rules:
+        domain = rule.domain.lower().strip().removeprefix("https://").removeprefix("http://").split("/", 1)[0].strip(".")
+        if not re.fullmatch(r"[a-z0-9.-]+", domain) or "." not in domain:
+            raise HTTPException(422, f"无效域名: {rule.domain}")
+        if domain in seen:
+            raise HTTPException(422, f"域名重复: {domain}")
+        seen.add(domain)
+        normalized.append(CookieRule(domain=domain, cookie=rule.cookie.strip()))
+    result = CookiesPayload(rules=normalized)
+    with Session(engine) as session:
+        row = session.get(Setting, "cookies") or Setting(key="cookies", value="")
+        row.value = result.model_dump_json()
+        row.updated_at = utcnow()
+        session.add(row)
+        session.commit()
+    return result
