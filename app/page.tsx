@@ -13,6 +13,9 @@ type Task = {
   backendStatus?: string;
   speed?: string;
   eta?: string;
+  saveToObsidian?: boolean;
+  obsidianNotePath?: string;
+  obsidianError?: string;
 };
 
 const demoTasks: Task[] = [
@@ -38,6 +41,9 @@ type ApiTask = {
   eta?: string;
   error?: string;
   retry_count: number;
+  save_to_obsidian?: boolean;
+  obsidian_note_path?: string;
+  obsidian_error?: string;
 };
 
 type StorageInfo = {
@@ -127,6 +133,9 @@ function fromApiTask(item: ApiTask): Task {
     backendStatus: item.status,
     speed: item.speed,
     eta: item.eta,
+    saveToObsidian: item.save_to_obsidian,
+    obsidianNotePath: item.obsidian_note_path,
+    obsidianError: item.obsidian_error,
   };
 }
 
@@ -156,10 +165,10 @@ export default function Home() {
   const [nasApiUrl, setNasApiUrl] = useState("http://192.168.31.126:18888");
   const [deviceRevision, setDeviceRevision] = useState(0);
   const [taskFilter, setTaskFilter] = useState<"active" | "running" | "queued" | "failed">("active");
+  const [saveToObsidian, setSaveToObsidian] = useState(false);
   const activeTasks = useMemo(() => tasks.filter((task) => task.status === "下载中" || task.status === "排队中"), [tasks]);
   const historyTasks = useMemo(() => tasks.filter((task) => task.status !== "下载中" && task.status !== "排队中"), [tasks]);
   const active = activeTasks.length;
-  const completed = historyTasks.filter((task) => task.status === "已完成").length;
   const homeTasks = tasks.filter((task) => task.status !== "已完成" && (taskFilter === "active" || (taskFilter === "running" && task.status === "下载中") || (taskFilter === "queued" && task.status === "排队中") || (taskFilter === "failed" && (task.status === "失败" || task.status === "已取消"))));
   const subscriptionsAddedToday = subscriptions.filter((item) => item.created_at && new Date(item.created_at).toDateString() === new Date().toDateString()).length;
   const pendingSubscriptions = subscriptions.filter((item) => item.enabled && !item.last_checked_at).length;
@@ -182,6 +191,7 @@ export default function Home() {
 
   function changeDownloadDevice(device: "computer" | "nas") {
     setDownloadDevice(device);
+    if (device === "computer") setSaveToObsidian(false);
     setTasks([]);
     setSubscriptions([]);
     setStorage(null);
@@ -295,6 +305,7 @@ export default function Home() {
       progress: 0,
       meta: `${quality} · 等待解析`,
       tone: "green",
+      saveToObsidian,
     };
     setTasks((current) => [...current, optimisticTask]);
     setUrl("");
@@ -310,7 +321,7 @@ export default function Home() {
       const response = await fetch(`${apiBase}/api/tasks`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: value, kind: "auto", quality: qualityMap[quality], folder: "自动分类" }),
+        body: JSON.stringify({ url: value, kind: "auto", quality: qualityMap[quality], folder: saveToObsidian ? "Obsidian视频" : "自动分类", save_to_obsidian: saveToObsidian }),
       });
       if (!response.ok) throw new Error("提交失败");
       setNotice("任务已进入真实下载队列，可在 NAS 下载目录查看结果");
@@ -579,7 +590,7 @@ export default function Home() {
     <main>
       {menuOpen && <button className="menu-backdrop" aria-label="关闭导航" onClick={() => setMenuOpen(false)} />}
       <aside className={`sidebar ${menuOpen ? "open" : ""}`}>
-        <div className="brand"><span className="brand-mark">N</span><span>NAS<span>Flow</span></span></div>
+        <div className="brand"><img className="brand-mark" src="/nasflow-icon.png" alt="" /><span>NAS<span>Flow</span></span></div>
         <nav aria-label="主要导航">
           <button className={activeNav === "overview" ? "active" : ""} onClick={() => navigateTo("overview")}><span>↓</span>首页（下载中心） <b>{active}</b></button>
           <button className={activeNav === "library" ? "active" : ""} onClick={() => navigateTo("library")}><span>▦</span>媒体库</button>
@@ -613,8 +624,9 @@ export default function Home() {
           </form>
           <div className="capture-options">
             <div className="device-picker" aria-label="下载设备"><span>下载到</span><button className={downloadDevice === "computer" ? "active" : ""} onClick={() => changeDownloadDevice("computer")} type="button">当前电脑</button><button className={downloadDevice === "nas" ? "active" : ""} onClick={() => changeDownloadDevice("nas")} type="button">NAS</button></div>
+            <label className={`obsidian-option ${downloadDevice !== "nas" ? "disabled" : ""}`} title={downloadDevice !== "nas" ? "请先选择下载到 NAS" : "视频仍保存在媒体目录，只在 Obsidian 创建索引笔记"}><span className="obsidian-logo">O</span><span><b>同时收藏到 Obsidian</b><small>{downloadDevice === "nas" ? "创建视频笔记，视频仍单独保存" : "请先选择“下载到 NAS”"}</small></span><input type="checkbox" checked={saveToObsidian} disabled={downloadDevice !== "nas"} onChange={(event) => setSaveToObsidian(event.target.checked)} aria-label="同时收藏到 Obsidian" /></label>
             <div className="supported"><span className="mini yt">▶</span><span className="mini bilibili">B</span><span className="mini insta">◎</span><span className="mini x">𝕏</span><span className="mini note">R</span><span>支持 1000+ 网站</span></div>
-            <label>保存至 <select aria-label="保存目录"><option>/downloads/自动分类</option><option>/downloads/视频</option><option>/downloads/图片</option></select></label>
+            <label>保存至 <select aria-label="保存目录"><option>{saveToObsidian ? "/downloads/Obsidian视频" : "/downloads/自动分类"}</option><option>/downloads/视频</option><option>/downloads/图片</option></select></label>
             <label>画质 <select value={quality} onChange={(e) => setQuality(e.target.value)} aria-label="下载画质"><option>自动选择最佳画质</option><option>最高 4K</option><option>最高 1080P</option><option>仅音频</option></select></label>
           </div>
           {notice && <p className="notice" role="status">{notice}</p>}
@@ -639,19 +651,7 @@ export default function Home() {
             </div>
         </section>
 
-        <section className="home-bottom-grid">
-          <div className="panel recent-panel home-recent">
-            <div className="panel-title"><div><h3>最近完成</h3><span>{completed} 个已完成</span></div><button onClick={() => navigateTo("library")}>查看媒体库 →</button></div>
-            <div className="finished-list">
-              {historyTasks.filter((task) => task.status === "已完成").slice(0, 4).map((task, index) => <article key={task.id}><span className={`finished-cover cover-${index % 3 + 1}`}>{task.source.slice(0, 1)}</span><div><h4>{task.title}</h4><p>{task.source} · {task.meta}</p></div><time className="history-status completed">已完成</time></article>)}
-              {!completed && <div className="empty compact">还没有完成的下载。</div>}
-            </div>
-          </div>
-          <div className="download-stats">
-            <h3>下载统计</h3>
-            <div><article><span>下载中</span><strong>{tasks.filter((task) => task.status === "下载中").length}</strong></article><article><span>等待中</span><strong>{tasks.filter((task) => task.status === "排队中").length}</strong></article><article><span>已完成</span><strong>{completed}</strong></article><article><span>失败</span><strong>{tasks.filter((task) => task.status === "失败").length}</strong></article></div>
-          </div>
-        </section></>}
+        </>}
 
         {activeNav === "library" && <section className="content-grid single-view">
 
@@ -681,6 +681,11 @@ export default function Home() {
                 <div><span>订阅中心</span><p>按平台管理频道、作者和收藏夹，自动发现新增内容。</p></div>
                 <div className="subscription-heading-actions"><button onClick={() => setShowSubscriptionForm((value) => !value)}>＋ 添加订阅</button><button className="heading-action" onClick={() => syncSubscriptions()}>↻ 同步全部</button></div>
               </div>
+              <section className="automation-strip subscription-automation">
+                <div><span className="automation-icon">◎</span><div><h3>订阅自动更新</h3><p>按设定周期检查收藏夹与频道，只下载新增内容。</p></div></div>
+                <div className="automation-pills"><span>自动去重</span><span>按平台启停</span><span>{subscriptions.filter((item) => item.enabled).length} 个订阅运行中</span></div>
+                <button type="button" onClick={() => syncSubscriptions()}>立即同步全部</button>
+              </section>
               <section className="platform-settings">
                 <div><h3>更新网站</h3><p>关闭某个平台后，自动同步和“同步全部”都会跳过该网站；仍可进入单个订阅手动挑选内容。</p></div>
                 <div className="platform-switch-list">

@@ -21,6 +21,10 @@ services:
       - TZ=Asia/Shanghai
       - NASFLOW_CORS=*
       - NASFLOW_CONCURRENCY=2
+      - NASFLOW_OBSIDIAN_VAULT=/obsidian
+      - NASFLOW_OBSIDIAN_NOTES_DIR=视频收藏
+      - NASFLOW_PUBLIC_DOWNLOADS=/volume2/盘2/media/nas-dl
     volumes:
       - ./data:/data
       - /volume2/盘2/media/nas-dl:/downloads
+      - /volume2/盘2/ObsidianSync:/obsidian

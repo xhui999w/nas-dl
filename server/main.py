@@ -24,6 +24,9 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 DATA_DIR = Path(os.getenv("NASFLOW_DATA", "/data"))
 DOWNLOAD_DIR = Path(os.getenv("NASFLOW_DOWNLOADS", "/downloads"))
+OBSIDIAN_VAULT_DIR = Path(os.getenv("NASFLOW_OBSIDIAN_VAULT", "/obsidian"))
+OBSIDIAN_NOTES_DIR = os.getenv("NASFLOW_OBSIDIAN_NOTES_DIR", "视频收藏").strip("/\\") or "视频收藏"
+PUBLIC_DOWNLOAD_DIR = Path(os.getenv("NASFLOW_PUBLIC_DOWNLOADS", "/volume2/盘2/media/nas-dl"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -57,6 +60,9 @@ class Task(SQLModel, table=True):
     retry_count: int = 0
     log_tail: str = ""
     subscription_id: str | None = None
+    save_to_obsidian: bool = False
+    obsidian_note_path: str | None = None
+    obsidian_error: str | None = None
     created_at: datetime = DBField(default_factory=utcnow)
     updated_at: datetime = DBField(default_factory=utcnow)
 
@@ -84,6 +90,7 @@ class CreateTask(BaseModel):
     kind: Literal["auto", "video", "gallery"] = "auto"
     quality: Literal["best", "4k", "1080p", "audio"] = "best"
     folder: str = "自动分类"
+    save_to_obsidian: bool = False
 
 
 class CreateSubscription(BaseModel):
@@ -277,6 +284,52 @@ def build_command(task: Task) -> tuple[list[str], Path]:
     return command, target
 
 
+def safe_note_name(value: str) -> str:
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', " ", value)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
+    return cleaned[:120] or "未命名视频"
+
+
+def write_obsidian_note(task_id: str) -> None:
+    with Session(engine) as session:
+        task = session.get(Task, task_id)
+        if not task or not task.save_to_obsidian or not task.output_path:
+            return
+        session.expunge(task)
+    try:
+        video_path = Path(task.output_path)
+        if not video_path.exists():
+            raise FileNotFoundError(f"下载文件不存在: {video_path}")
+        try:
+            relative_video = video_path.resolve().relative_to(DOWNLOAD_DIR.resolve())
+            public_video_path = PUBLIC_DOWNLOAD_DIR / relative_video
+        except ValueError:
+            public_video_path = video_path
+        notes_dir = OBSIDIAN_VAULT_DIR / OBSIDIAN_NOTES_DIR
+        notes_dir.mkdir(parents=True, exist_ok=True)
+        note_path = notes_dir / f"{safe_note_name(task.title)} [{task.id[:8]}].md"
+        downloaded_at = utcnow().astimezone().isoformat(timespec="seconds")
+        size = video_path.stat().st_size
+        frontmatter = {
+            "title": task.title,
+            "source": platform_for_url(task.url),
+            "source_url": task.url,
+            "video_path": str(public_video_path),
+            "file_size": size,
+            "downloaded_at": downloaded_at,
+            "nasflow_task_id": task.id,
+            "tags": ["NASFlow", "视频收藏"],
+        }
+        yaml_lines = ["---"]
+        for key, value in frontmatter.items():
+            yaml_lines.append(f"{key}: {json.dumps(value, ensure_ascii=False)}")
+        yaml_lines += ["---", "", f"# {task.title}", "", f"- 来源平台：{platform_for_url(task.url)}", f"- 原始链接：[打开原页面]({task.url})", f"- NAS 视频：`{public_video_path}`", f"- 文件大小：{round(size / 1024 / 1024, 1)} MB", f"- 下载时间：{downloaded_at}", "", "> 视频文件由 NASFlow 单独保存在 NAS 媒体库中，本笔记不复制视频本体。", ""]
+        note_path.write_text("\n".join(yaml_lines), encoding="utf-8")
+        update_task(task_id, obsidian_note_path=str(note_path), obsidian_error=None)
+    except Exception as exc:
+        update_task(task_id, obsidian_error=str(exc))
+
+
 def run_download(task_id: str) -> None:
     with Session(engine) as session:
         task = session.get(Task, task_id)
@@ -329,6 +382,7 @@ def run_download(task_id: str) -> None:
         if not was_cancelled:
             if code == 0:
                 update_task(task_id, status="completed", progress=100, eta=None)
+                write_obsidian_note(task_id)
             else:
                 update_task(task_id, status="failed", error=f"{task.engine} 退出码 {code}")
     except Exception as exc:
@@ -350,6 +404,9 @@ def migrate_schema() -> None:
         "retry_count": "INTEGER NOT NULL DEFAULT 0",
         "log_tail": "TEXT NOT NULL DEFAULT ''",
         "subscription_id": "TEXT",
+        "save_to_obsidian": "BOOLEAN NOT NULL DEFAULT 0",
+        "obsidian_note_path": "TEXT",
+        "obsidian_error": "TEXT",
     }
     with engine.begin() as connection:
         for name, definition in additions.items():
@@ -429,6 +486,7 @@ def create_task(payload: CreateTask) -> Task:
         engine=choose_engine(payload.url, payload.kind),
         quality=payload.quality,
         folder=safe_folder(payload.folder),
+        save_to_obsidian=payload.save_to_obsidian,
     )
     with Session(engine) as session:
         session.add(task)

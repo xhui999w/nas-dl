@@ -4,6 +4,10 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "NASFlow — 把喜欢的内容带回家",
   description: "为 NAS 打造的开源媒体采集与自动整理中心。",
+  icons: {
+    icon: "/nasflow-icon.png",
+    apple: "/nasflow-icon.png",
+  },
 };
 
 export default function RootLayout({
