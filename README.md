@@ -73,4 +73,6 @@ api:
 
 第三方组件说明见 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)。
 
+网站兼容性并不等同于绕过登录、会员、地区或 DRM 限制。当前实测矩阵、状态定义和可重复执行方法见 [网站兼容性报告](./docs/SITE_COMPATIBILITY.md)，机器可读结果位于 `tests/site_compatibility/results.json`。
+
 NASFlow 自身代码使用 MIT License 发布。

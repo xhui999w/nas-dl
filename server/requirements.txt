@@ -1,6 +1,7 @@
 fastapi==0.116.1
 uvicorn[standard]==0.35.0
 sqlmodel==0.0.24
-yt-dlp[default]
-gallery-dl
+yt-dlp[default]>=2026.8.19
+gallery-dl>=1.32.9
+curl-cffi>=0.13.0
 python-multipart==0.0.20

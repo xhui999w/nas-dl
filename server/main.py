@@ -22,6 +22,8 @@ from sqlalchemy import inspect
 from sqlmodel import Field as DBField
 from sqlmodel import Session, SQLModel, create_engine, select
 
+from server.download_errors import classify_download_error
+
 DATA_DIR = Path(os.getenv("NASFLOW_DATA", "/data"))
 DOWNLOAD_DIR = Path(os.getenv("NASFLOW_DOWNLOADS", "/downloads"))
 OBSIDIAN_VAULT_DIR = Path(os.getenv("NASFLOW_OBSIDIAN_VAULT", "/obsidian"))
@@ -54,6 +56,7 @@ class Task(SQLModel, table=True):
     speed: str | None = None
     eta: str | None = None
     error: str | None = None
+    error_type: str | None = None
     output_path: str | None = None
     quality: str = "best"
     folder: str = "自动分类"
@@ -159,6 +162,9 @@ def choose_engine(url: str, kind: str) -> str:
     if kind == "video":
         return "yt-dlp"
     host = (urlparse(url).hostname or "").lower()
+    path = urlparse(url).path.lower()
+    if ("instagram.com" in host and any(marker in path for marker in ("/reel/", "/reels/", "/p/", "/tv/"))) or ((host == "x.com" or host.endswith(".x.com") or "twitter.com" in host) and "/status/" in path):
+        return "yt-dlp"
     gallery_hosts = ("instagram.com", "x.com", "twitter.com", "pixiv.net", "flickr.com")
     return "gallery-dl" if any(item in host for item in gallery_hosts) else "yt-dlp"
 
@@ -206,6 +212,19 @@ def cookie_file_for_url(url: str) -> Path | None:
     return cookie_path
 
 
+def configured_proxy() -> str | None:
+    """Return the persisted downloader proxy, while keeping env proxies working."""
+    with Session(engine) as session:
+        row = session.get(Setting, "system")
+    if not row:
+        return None
+    try:
+        proxy = SettingsPayload.model_validate_json(row.value).proxy.strip()
+    except Exception:
+        return None
+    return proxy or None
+
+
 def update_task(task_id: str, **values: object) -> None:
     with Session(engine) as session:
         task = session.get(Task, task_id)
@@ -242,8 +261,11 @@ def build_command(task: Task) -> tuple[list[str], Path]:
     target = DOWNLOAD_DIR / safe_folder(task.folder)
     target.mkdir(parents=True, exist_ok=True)
     cookie_file = cookie_file_for_url(task.url)
+    proxy = configured_proxy()
     if task.engine == "gallery-dl":
         command = [sys.executable, "-m", "gallery_dl", "--dest", str(target), "--write-metadata"]
+        if proxy:
+            command += ["--proxy", proxy]
         if task.subscription_id:
             archive_dir = DATA_DIR / "archives"
             archive_dir.mkdir(parents=True, exist_ok=True)
@@ -275,11 +297,13 @@ def build_command(task: Task) -> tuple[list[str], Path]:
     else:
         command.append("--no-playlist")
     if shutil.which("ffmpeg"):
-        command.insert(-4, "--embed-metadata")
+        command.append("--embed-metadata")
     if task.quality == "audio":
         command += ["-x", "--audio-format", "m4a"]
     if cookie_file:
         command += ["--cookies", str(cookie_file)]
+    if proxy:
+        command += ["--proxy", proxy]
     command.append(task.url)
     return command, target
 
@@ -337,7 +361,7 @@ def run_download(task_id: str) -> None:
             return
         command, target = build_command(task)
 
-    update_task(task_id, status="running", error=None, output_path=str(target))
+    update_task(task_id, status="running", error=None, error_type=None, output_path=str(target))
     try:
         process = subprocess.Popen(
             command,
@@ -381,12 +405,20 @@ def run_download(task_id: str) -> None:
             was_cancelled = current is not None and current.status == "cancelled"
         if not was_cancelled:
             if code == 0:
-                update_task(task_id, status="completed", progress=100, eta=None)
+                update_task(task_id, status="completed", progress=100, eta=None, error_type=None)
                 write_obsidian_note(task_id)
             else:
-                update_task(task_id, status="failed", error=f"{task.engine} 退出码 {code}")
+                with Session(engine) as session:
+                    failed_task = session.get(Task, task_id)
+                    log_tail = failed_task.log_tail if failed_task else ""
+                update_task(
+                    task_id,
+                    status="failed",
+                    error=f"{task.engine} 退出码 {code}",
+                    error_type=classify_download_error(log_tail),
+                )
     except Exception as exc:
-        update_task(task_id, status="failed", error=str(exc))
+        update_task(task_id, status="failed", error=str(exc), error_type=classify_download_error(str(exc)))
     finally:
         with process_lock:
             processes.pop(task_id, None)
@@ -404,6 +436,7 @@ def migrate_schema() -> None:
         "retry_count": "INTEGER NOT NULL DEFAULT 0",
         "log_tail": "TEXT NOT NULL DEFAULT ''",
         "subscription_id": "TEXT",
+        "error_type": "TEXT",
         "save_to_obsidian": "BOOLEAN NOT NULL DEFAULT 0",
         "obsidian_note_path": "TEXT",
         "obsidian_error": "TEXT",
@@ -528,6 +561,7 @@ def retry_task(task_id: str) -> Task:
         task.status = "queued"
         task.progress = 0
         task.error = None
+        task.error_type = None
         task.retry_count += 1
         task.updated_at = utcnow()
         session.add(task)
@@ -662,6 +696,9 @@ def list_subscription_entries(subscription_id: str) -> list[SubscriptionEntry]:
     cookie_file = cookie_file_for_url(item.url)
     if cookie_file:
         command[3:3] = ["--cookies", str(cookie_file)]
+    proxy = configured_proxy()
+    if proxy:
+        command[3:3] = ["--proxy", proxy]
     result = subprocess.run(
         command,
         capture_output=True,

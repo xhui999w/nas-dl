@@ -40,6 +40,7 @@ type ApiTask = {
   speed?: string;
   eta?: string;
   error?: string;
+  error_type?: string;
   retry_count: number;
   save_to_obsidian?: boolean;
   obsidian_note_path?: string;
@@ -119,9 +120,24 @@ function getApiBase() {
   return apiBasePromise;
 }
 
+const errorTypeLabels: Record<string, string> = {
+  COOKIE_REQUIRED: "需要 Cookie",
+  LOGIN_REQUIRED: "需要登录",
+  DRM: "DRM 保护",
+  REGION_LOCKED: "地区限制",
+  BLOCKED: "网站风控拦截",
+  NETWORK_ERROR: "网络连接失败",
+  VIDEO_UNAVAILABLE: "视频不存在或已失效",
+  UNSUPPORTED: "暂不支持该网站",
+  PARSE_ERROR: "解析失败",
+  FFMPEG_ERROR: "音视频处理失败",
+  DOWNLOADER_ERROR: "下载器异常",
+  UNKNOWN: "未知错误",
+};
+
 function fromApiTask(item: ApiTask): Task {
   const host = new URL(item.url).hostname.replace("www.", "");
-  const details = item.error || [item.speed, item.eta ? `剩余 ${item.eta}` : ""].filter(Boolean).join(" · ") || item.engine;
+  const details = (item.error_type && errorTypeLabels[item.error_type]) || item.error || [item.speed, item.eta ? `剩余 ${item.eta}` : ""].filter(Boolean).join(" · ") || item.engine;
   return {
     id: item.id,
     title: item.title || "等待解析",

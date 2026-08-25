@@ -1,0 +1,36 @@
+name: Site compatibility matrix
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "20 19 * * 6"
+
+permissions:
+  contents: read
+
+jobs:
+  compatibility:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: server/requirements.txt
+      - name: Install download runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          python -m pip install -r server/requirements.txt
+      - name: Run compatibility matrix
+        run: python tests/site_compatibility/run.py --workers 3
+      - name: Generate report
+        run: python tests/site_compatibility/generate_report.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: site-compatibility-${{ github.run_id }}
+          path: |
+            tests/site_compatibility/results.json
+            docs/SITE_COMPATIBILITY.md
