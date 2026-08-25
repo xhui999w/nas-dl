@@ -3,7 +3,7 @@ LABEL org.opencontainers.image.source="https://github.com/xhui999w/nas-dl"
 WORKDIR /app
 ENV NASFLOW_API_PORT=8888
 COPY package*.json ./
-RUN npm ci
+RUN npm ci --ignore-scripts --no-audit --no-fund
 COPY app ./app
 COPY public ./public
 COPY worker ./worker
