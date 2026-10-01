@@ -1,6 +1,6 @@
 "use client";
 
-import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, FormEvent, MouseEvent as ReactMouseEvent, useEffect, useMemo, useState } from "react";
 
 type Task = {
   id: number | string;
@@ -73,6 +73,14 @@ type SubscriptionEntry = { id: string; title: string; url: string; duration?: nu
 
 type CookieRow = { id: number; domain: string; cookie: string };
 
+type SaveFileHandle = {
+  createWritable: () => Promise<WritableStream<Uint8Array>>;
+};
+
+type SavePickerWindow = Window & {
+  showSaveFilePicker?: (options: { suggestedName: string }) => Promise<SaveFileHandle>;
+};
+
 const demoSubscriptions: Subscription[] = [
   { id: 201, name: "科技频道每周更新", url: "https://www.youtube.com/@demo", enabled: true, interval_minutes: 360, quality: "1080p", folder: "订阅/科技" },
   { id: 202, name: "旅行影像收藏", url: "https://www.bilibili.com/space/demo", enabled: true, interval_minutes: 720, quality: "best", folder: "订阅/旅行" },
@@ -108,19 +116,7 @@ const statusLabels: Record<string, Task["status"]> = {
   cancelled: "已取消",
 };
 
-let apiBasePromise: Promise<string> | undefined;
-
-function getApiBase() {
-  apiBasePromise ??= fetch("/api-config", { cache: "no-store" })
-    .then(async (response) => {
-      if (!response.ok) throw new Error("config unavailable");
-      const config = (await response.json()) as { apiPort?: string };
-      const port = /^\d{1,5}$/.test(config.apiPort || "") ? config.apiPort : "8888";
-      return `${window.location.protocol}//${window.location.hostname}:${port}`;
-    })
-    .catch(() => `${window.location.protocol}//${window.location.hostname}:8888`);
-  return apiBasePromise;
-}
+const API_BASE = "/nas-api";
 
 const errorTypeLabels: Record<string, string> = {
   COOKIE_REQUIRED: "需要 Cookie",
@@ -183,8 +179,6 @@ export default function Home() {
   const [entriesLoading, setEntriesLoading] = useState(false);
   const [showSubscriptionForm, setShowSubscriptionForm] = useState(false);
   const [downloadDevice, setDownloadDevice] = useState<"device" | "nas">("nas");
-  const [nasApiUrl, setNasApiUrl] = useState("http://192.168.31.126:18888");
-  const [deviceRevision, setDeviceRevision] = useState(0);
   const [deviceTaskIds, setDeviceTaskIds] = useState<Set<string>>(new Set());
   const [taskFilter, setTaskFilter] = useState<"active" | "running" | "queued" | "failed">("active");
   const [saveToObsidian, setSaveToObsidian] = useState(false);
@@ -197,7 +191,7 @@ export default function Home() {
   const latestSubscriptionSync = subscriptions.map((item) => item.last_checked_at).filter(Boolean).sort().at(-1);
 
   function getSelectedApiBase() {
-    return Promise.resolve(nasApiUrl.replace(/\/$/, ""));
+    return Promise.resolve(API_BASE);
   }
 
   useEffect(() => {
@@ -208,9 +202,7 @@ export default function Home() {
         const savedDevice = window.localStorage.getItem(DOWNLOAD_DESTINATION_KEY) || window.localStorage.getItem("nasflow-download-device");
         if (savedDevice === "device" || savedDevice === "computer") setDownloadDevice("device");
         if (savedDevice === "nas") setDownloadDevice("nas");
-        const savedNasApi = window.localStorage.getItem("nasflow-nas-api");
-        if (savedNasApi) setNasApiUrl(savedNasApi);
-        else if (!['127.0.0.1', 'localhost', '::1'].includes(window.location.hostname)) setNasApiUrl(`${window.location.protocol}//${window.location.hostname}:18888`);
+        window.localStorage.removeItem("nasflow-nas-api");
         const savedDeviceTasks = JSON.parse(window.localStorage.getItem(DEVICE_TASKS_KEY) || "[]") as unknown;
         if (Array.isArray(savedDeviceTasks)) setDeviceTaskIds(new Set(savedDeviceTasks.filter((id): id is string => typeof id === "string")));
       } catch {
@@ -223,6 +215,9 @@ export default function Home() {
   function changeDownloadDevice(device: "device" | "nas") {
     setDownloadDevice(device);
     if (device === "device") setSaveToObsidian(false);
+    setNotice(device === "device"
+      ? "文件会先由 NAS 准备；完成后点击“保存到此设备”，浏览器再下载到这台电脑或手机"
+      : "下载完成后文件会保存在 NAS 下载目录");
     try {
       window.localStorage.setItem(DOWNLOAD_DESTINATION_KEY, device);
       window.localStorage.removeItem("nasflow-download-device");
@@ -249,18 +244,31 @@ export default function Home() {
   }
 
   function taskFileUrl(task: Task) {
-    return `${nasApiUrl.replace(/\/$/, "")}/api/tasks/${encodeURIComponent(String(task.id))}/file`;
+    return `${API_BASE}/api/tasks/${encodeURIComponent(String(task.id))}/file`;
   }
 
-  function saveDeviceAddresses() {
+  async function saveTaskToDevice(event: ReactMouseEvent<HTMLAnchorElement>, task: Task) {
+    const picker = (window as SavePickerWindow).showSaveFilePicker;
+    if (!picker) {
+      markDeviceTaskSaved(String(task.id));
+      return;
+    }
+
+    event.preventDefault();
+    const outputName = task.outputPath?.split(/[\\/]/).pop();
+    const suggestedName = (outputName || `${task.title}.mp4`).replace(/[<>:"/\\|?*]/g, "_");
     try {
-      new URL(nasApiUrl);
-      window.localStorage.setItem("nasflow-nas-api", nasApiUrl.replace(/\/$/, ""));
-      setDeviceRevision((value) => value + 1);
-      setConnected(false);
-      setNotice("NAS 服务地址已保存在当前浏览器");
-    } catch {
-      setNotice("请输入完整地址，例如 http://192.168.31.126:18888");
+      const handle = await picker.call(window, { suggestedName });
+      setNotice("正在保存到所选文件夹，请保持页面打开");
+      const response = await fetch(taskFileUrl(task));
+      if (!response.ok || !response.body) throw new Error("download failed");
+      const writable = await handle.createWritable();
+      await response.body.pipeTo(writable);
+      markDeviceTaskSaved(String(task.id));
+      setNotice("文件已保存到当前设备");
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      setNotice("保存失败，请重新点击“保存到此设备”");
     }
   }
 
@@ -325,7 +333,7 @@ export default function Home() {
       disposed = true;
       window.clearInterval(timer);
     };
-  }, [nasApiUrl, deviceRevision]);
+  }, []);
 
   function navigateTo(id: string, message?: string) {
     setActiveNav(id);
@@ -346,6 +354,10 @@ export default function Home() {
       new URL(value);
     } catch {
       setNotice("这个链接看起来不完整，请检查后重试");
+      return;
+    }
+    if (!connected) {
+      setNotice("NAS 服务尚未连接，请稍后重试");
       return;
     }
     const optimisticTask: Task = {
@@ -385,7 +397,9 @@ export default function Home() {
         setNotice("任务已进入下载队列，完成后保存在 NAS 下载目录");
       }
     } catch {
-      setNotice("界面演示任务已创建；启动 NASFlow 下载服务后即可执行真实下载");
+      setTasks((current) => current.filter((task) => task.id !== optimisticTask.id));
+      setUrl(value);
+      setNotice("任务提交失败，请检查网络后重试");
     }
   }
 
@@ -707,7 +721,7 @@ export default function Home() {
                     <div className="progress"><i style={{ width: `${task.progress || 3}%` }} /></div>
                     <div className="task-details"><span>{task.speed || (task.status === "排队中" ? "等待空闲任务槽" : task.meta)}</span><span>{task.eta ? `剩余 ${task.eta}` : task.status}</span></div>
                   </div>
-                  <div className="task-row-actions">{task.status === "已完成" && typeof task.id === "string" && <a className="device-download" href={taskFileUrl(task)} onClick={() => markDeviceTaskSaved(task.id as string)} aria-label={`保存 ${task.title} 到当前设备`} title="保存到此设备">↓</a>}{(task.status === "失败" || task.status === "已取消") && <button onClick={() => retryTask(task)} aria-label={`重试 ${task.title}`}>↻</button>}{(task.status === "下载中" || task.status === "排队中") && <button onClick={() => cancelTask(task)} aria-label={`取消 ${task.title}`}>×</button>}</div>
+                  <div className="task-row-actions">{task.status === "已完成" && typeof task.id === "string" && <a className="device-download" href={taskFileUrl(task)} download onClick={(event) => saveTaskToDevice(event, task)} aria-label={`保存 ${task.title} 到当前设备`} title="保存到此设备">保存到此设备</a>}{(task.status === "失败" || task.status === "已取消") && <button onClick={() => retryTask(task)} aria-label={`重试 ${task.title}`}>↻</button>}{(task.status === "下载中" || task.status === "排队中") && <button onClick={() => cancelTask(task)} aria-label={`取消 ${task.title}`}>×</button>}</div>
                 </article>
               ))}
               {!homeTasks.length && <div className="empty">当前筛选条件下没有任务。</div>}
@@ -727,7 +741,7 @@ export default function Home() {
                   <div><h4>{task.title}</h4><p>{task.source} · {task.meta}</p></div>
                   <time className={`history-status ${task.backendStatus || ""}`}>{task.status}</time>
                   <div className="history-actions">
-                    {task.status === "已完成" && typeof task.id === "string" && <a className="device-download" href={taskFileUrl(task)} aria-label={`保存 ${task.title} 到当前设备`} title="保存到此设备">↓</a>}
+                    {task.status === "已完成" && typeof task.id === "string" && <a className="device-download" href={taskFileUrl(task)} download onClick={(event) => saveTaskToDevice(event, task)} aria-label={`保存 ${task.title} 到当前设备`} title="保存到此设备">保存到此设备</a>}
                     {(task.status === "失败" || task.status === "已取消") && <button onClick={() => retryTask(task)} aria-label={`重试 ${task.title}`}>↻</button>}
                     <button className="delete-button" onClick={() => deleteTask(task)} aria-label={`删除 ${task.title}`}>×</button>
                   </div>
@@ -826,7 +840,7 @@ export default function Home() {
         )}
 
         {activeNav === "notifications" && <section className="standalone-view simple-page"><h2>通知推送</h2><p>下载完成、失败以及订阅发现新内容时，都可以在这里统一配置提醒。</p><div className="simple-card"><strong>推送渠道</strong><span>该功能正在接入，后续可独立启用，不会挤在下载页面中。</span></div></section>}
-        {activeNav === "settings" && <section className="standalone-view simple-page"><h2>系统设置</h2><p>配置 NASFlow 服务地址。选择“当前设备”时，NAS 准备好文件后由浏览器保存到这台电脑或手机。</p><div className="device-settings"><label><span>NAS API</span><input value={nasApiUrl} onChange={(event) => setNasApiUrl(event.target.value)} placeholder="http://192.168.31.126:18888" /></label><div className="device-settings-footer"><span><i className={connected ? "online" : ""} />保存位置：{downloadDevice === "nas" ? "NAS" : "当前设备"} · {connected ? "服务正常" : "无法连接"}</span><button onClick={saveDeviceAddresses}>保存服务地址</button></div></div></section>}
+        {activeNav === "settings" && <section className="standalone-view simple-page"><h2>系统设置</h2><p>NASFlow 会自动连接下载服务。选择“当前设备”时，NAS 准备好文件后由浏览器保存到这台电脑或手机。</p><div className="device-settings"><label><span>连接方式</span><input value="自动安全连接" readOnly /></label><div className="device-settings-footer"><span><i className={connected ? "online" : ""} />保存位置：{downloadDevice === "nas" ? "NAS" : "当前设备"} · {connected ? "服务正常" : "无法连接"}</span></div></div></section>}
 
         <footer><p><i /> NASFlow 服务运行中 · 已连续运行 12 天 8 小时</p><div><span>yt-dlp <b>最新版</b></span><span>gallery-dl <b>最新版</b></span><a href="#help">需要帮助？</a></div></footer>
       </section>

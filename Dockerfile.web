@@ -2,6 +2,7 @@ FROM --platform=$BUILDPLATFORM node:22-alpine AS builder
 LABEL org.opencontainers.image.source="https://github.com/xhui999w/nas-dl"
 WORKDIR /app
 ENV NASFLOW_API_PORT=8888
+ENV NASFLOW_INTERNAL_API_URL=http://api:8888
 COPY package*.json ./
 RUN npm ci --ignore-scripts --no-audit --no-fund
 COPY app ./app
@@ -28,6 +29,7 @@ FROM node:22-alpine
 LABEL org.opencontainers.image.source="https://github.com/xhui999w/nas-dl"
 WORKDIR /app
 ENV NASFLOW_API_PORT=8888
+ENV NASFLOW_INTERNAL_API_URL=http://api:8888
 COPY package*.json ./
 COPY --from=runtime-deps /deps/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
