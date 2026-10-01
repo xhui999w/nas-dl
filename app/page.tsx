@@ -747,7 +747,7 @@ export default function Home() {
                     <div className="progress"><i style={{ width: `${task.progress || 3}%` }} /></div>
                     <div className="task-details"><span>{task.speed || (task.status === "排队中" ? "等待空闲任务槽" : task.meta)}</span><span>{task.eta ? `剩余 ${task.eta}` : task.status}</span></div>
                   </div>
-                  <div className="task-row-actions">{task.status === "已完成" && typeof task.id === "string" && <a className="device-download" href={taskFileUrl(task)} download onClick={(event) => saveTaskToDevice(event, task)} aria-label={`保存 ${task.title} 到当前设备`} title="保存到此设备">保存到此设备</a>}{(task.status === "失败" || task.status === "已取消") && <button onClick={() => retryTask(task)} aria-label={`重试 ${task.title}`}>↻</button>}{(task.status === "下载中" || task.status === "排队中") && <button onClick={() => cancelTask(task)} aria-label={`取消 ${task.title}`}>×</button>}</div>
+                  <div className="task-row-actions">{task.status === "已完成" && typeof task.id === "string" && <a className="device-download" href={taskFileUrl(task)} download onClick={(event) => saveTaskToDevice(event, task)} aria-label={`保存 ${task.title} 到当前设备`} title="保存到此设备"><span aria-hidden="true">⇩</span></a>}{(task.status === "失败" || task.status === "已取消") && <button onClick={() => retryTask(task)} aria-label={`重试 ${task.title}`}>↻</button>}{(task.status === "下载中" || task.status === "排队中") && <button onClick={() => cancelTask(task)} aria-label={`取消 ${task.title}`}>×</button>}</div>
                 </article>
               ))}
               {!homeTasks.length && <div className="empty">当前筛选条件下没有任务。</div>}
@@ -767,7 +767,7 @@ export default function Home() {
                   <div><h4>{task.title}</h4><p>{task.source} · {task.meta}</p></div>
                   <time className={`history-status ${task.backendStatus || ""}`}>{task.status}</time>
                   <div className="history-actions">
-                    {task.status === "已完成" && typeof task.id === "string" && <a className="device-download" href={taskFileUrl(task)} download onClick={(event) => saveTaskToDevice(event, task)} aria-label={`保存 ${task.title} 到当前设备`} title="保存到此设备">保存到此设备</a>}
+                    {task.status === "已完成" && typeof task.id === "string" && <a className="device-download" href={taskFileUrl(task)} download onClick={(event) => saveTaskToDevice(event, task)} aria-label={`保存 ${task.title} 到当前设备`} title="保存到此设备"><span aria-hidden="true">⇩</span></a>}
                     {(task.status === "失败" || task.status === "已取消") && <button onClick={() => retryTask(task)} aria-label={`重试 ${task.title}`}>↻</button>}
                     <button className="delete-button" onClick={() => deleteTask(task)} aria-label={`删除 ${task.title}`}>×</button>
                   </div>
