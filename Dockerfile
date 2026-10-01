@@ -12,7 +12,9 @@ RUN apt-get update \
 COPY --from=deno /deno /usr/local/bin/deno
 WORKDIR /app
 COPY server/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+ARG DEPENDENCY_REFRESH=manual
+RUN echo "dependency refresh: ${DEPENDENCY_REFRESH}" \
+    && pip install --no-cache-dir -r requirements.txt
 COPY server ./server
 EXPOSE 8888
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD curl -fsS http://localhost:8888/api/health || exit 1
