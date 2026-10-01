@@ -47,6 +47,15 @@ class TaskTitleTests(unittest.TestCase):
         task = Task(url="https://example.com/video/xyz", title="等待解析", output_path=str(output_path))
         self.assertEqual(recover_task_title(task, {}, {}), "文件标题")
 
+    def test_recovers_title_from_legacy_download_log(self) -> None:
+        task = Task(
+            url="https://example.com/video/legacy",
+            title="等待解析",
+            output_path="/downloads/自动分类",
+            log_tail='[Metadata] Adding metadata to "/downloads/自动分类/作者/日志标题 [legacy].mp4"',
+        )
+        self.assertEqual(recover_task_title(task, {}, {}), "日志标题")
+
 
 if __name__ == "__main__":
     unittest.main()

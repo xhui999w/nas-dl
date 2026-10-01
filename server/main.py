@@ -304,7 +304,7 @@ def title_from_output_path(output_path: str | None) -> str | None:
     if not output_path:
         return None
     path = Path(output_path)
-    if not path.is_file():
+    if not path.is_file() and (not path.suffix or path.suffix.lower() in {".json", ".info"}):
         return None
     for info_path in (Path(f"{path}.info.json"), path.with_suffix(".info.json")):
         if info_path.is_file():
@@ -317,6 +317,16 @@ def title_from_output_path(output_path: str | None) -> str | None:
     return name or None
 
 
+def title_from_task_logs(log_tail: str) -> str | None:
+    for line in reversed(log_tail.splitlines()):
+        match = re.search(r"(?:Adding metadata to|Destination:|__NASFLOW_FILE__)\s*:?\s*\"?(.+?)\"?$", line)
+        if match:
+            title = title_from_output_path(match.group(1).strip().strip('"'))
+            if title:
+                return title
+    return None
+
+
 def recover_task_title(task: Task, exact: dict[str, str], by_path: dict[str, str]) -> str | None:
     if not is_placeholder_title(task.title):
         return task.title.strip()
@@ -325,7 +335,7 @@ def recover_task_title(task: Task, exact: dict[str, str], by_path: dict[str, str
     key = source_path_key(task.url)
     if key and by_path.get(key):
         return by_path[key]
-    return title_from_output_path(task.output_path)
+    return title_from_output_path(task.output_path) or title_from_task_logs(task.log_tail)
 
 
 def backfill_task_titles() -> None:
