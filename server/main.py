@@ -41,6 +41,7 @@ engine = create_engine(
 executor = ThreadPoolExecutor(max_workers=MAX_WORKERS, thread_name_prefix="nasflow")
 processes: dict[str, subprocess.Popen[str]] = {}
 process_lock = threading.Lock()
+PLACEHOLDER_TITLE = "等待解析"
 
 
 def utcnow() -> datetime:
@@ -250,6 +251,102 @@ def append_log(task_id: str, line: str) -> None:
         session.commit()
 
 
+def is_placeholder_title(title: str | None) -> bool:
+    return not title or not title.strip() or title.strip() == PLACEHOLDER_TITLE
+
+
+def source_path_key(value: object) -> str:
+    try:
+        parsed = urlparse(str(value).strip())
+    except (TypeError, ValueError):
+        return ""
+    host = (parsed.hostname or "").lower().strip(".")
+    path = parsed.path.rstrip("/") or "/"
+    return f"{host}{path}" if host else ""
+
+
+def read_info_title(path: Path) -> tuple[str | None, list[str]]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None, []
+    if not isinstance(payload, dict):
+        return None, []
+    title = str(payload.get("title") or "").strip() or None
+    sources = [
+        str(payload.get("original_url") or "").strip(),
+        str(payload.get("webpage_url") or "").strip(),
+    ]
+    return title, [source for source in sources if source]
+
+
+def build_info_title_indexes() -> tuple[dict[str, str], dict[str, str]]:
+    exact: dict[str, str] = {}
+    by_path: dict[str, str] = {}
+    try:
+        info_paths = DOWNLOAD_DIR.rglob("*.info.json")
+        for info_path in info_paths:
+            title, sources = read_info_title(info_path)
+            if not title:
+                continue
+            for source in sources:
+                exact[source] = title
+                key = source_path_key(source)
+                if key:
+                    previous = by_path.get(key)
+                    by_path[key] = title if previous in (None, title) else ""
+    except OSError:
+        return exact, by_path
+    return exact, by_path
+
+
+def title_from_output_path(output_path: str | None) -> str | None:
+    if not output_path:
+        return None
+    path = Path(output_path)
+    if not path.is_file():
+        return None
+    for info_path in (Path(f"{path}.info.json"), path.with_suffix(".info.json")):
+        if info_path.is_file():
+            title, _ = read_info_title(info_path)
+            if title:
+                return title
+    name = path.name
+    name = re.sub(r"\.[A-Za-z0-9]+$", "", name)
+    name = re.sub(r"\s*\[[^\]]+\]$", "", name).strip()
+    return name or None
+
+
+def recover_task_title(task: Task, exact: dict[str, str], by_path: dict[str, str]) -> str | None:
+    if not is_placeholder_title(task.title):
+        return task.title.strip()
+    if task.url in exact:
+        return exact[task.url]
+    key = source_path_key(task.url)
+    if key and by_path.get(key):
+        return by_path[key]
+    return title_from_output_path(task.output_path)
+
+
+def backfill_task_titles() -> None:
+    with Session(engine) as session:
+        pending = list(session.exec(select(Task).where(Task.title == PLACEHOLDER_TITLE)).all())
+    if not pending:
+        return
+    exact, by_path = build_info_title_indexes()
+    updates = [(task.id, title) for task in pending if (title := recover_task_title(task, exact, by_path))]
+    if not updates:
+        return
+    with Session(engine) as session:
+        for task_id, title in updates:
+            task = session.get(Task, task_id)
+            if task and is_placeholder_title(task.title):
+                task.title = title
+                task.updated_at = utcnow()
+                session.add(task)
+        session.commit()
+
+
 def parse_progress(line: str) -> tuple[float | None, str | None, str | None]:
     percent_match = re.search(r"(\d{1,3}(?:\.\d+)?)%", line)
     speed_match = re.search(r"\bat\s+([^\s]+/s)", line)
@@ -452,6 +549,7 @@ def migrate_schema() -> None:
 def on_startup() -> None:
     SQLModel.metadata.create_all(engine)
     migrate_schema()
+    backfill_task_titles()
     with Session(engine) as session:
         interrupted = session.exec(select(Task).where(Task.status.in_(["running", "queued"]))).all()
         for task in interrupted:

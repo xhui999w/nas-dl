@@ -133,12 +133,27 @@ const errorTypeLabels: Record<string, string> = {
   UNKNOWN: "未知错误",
 };
 
+function taskTitle(item: ApiTask): string {
+  const title = item.title?.trim();
+  if (title && title !== "等待解析") return title;
+  const filename = item.output_path?.split(/[\\/]/).pop() || "";
+  const fallback = filename
+    .replace(/\.[A-Za-z0-9]+$/, "")
+    .replace(/\s*\[[^\]]+\]$/, "")
+    .trim();
+  if (fallback && !["自动分类", "Obsidian视频"].includes(fallback)) return fallback;
+  if (item.status === "failed") return "下载失败的视频";
+  if (item.status === "cancelled") return "已取消的视频";
+  if (item.status === "completed") return "已完成的视频";
+  return "正在获取视频名称";
+}
+
 function fromApiTask(item: ApiTask): Task {
   const host = new URL(item.url).hostname.replace("www.", "");
   const details = (item.error_type && errorTypeLabels[item.error_type]) || item.error || [item.speed, item.eta ? `剩余 ${item.eta}` : ""].filter(Boolean).join(" · ") || item.engine;
   return {
     id: item.id,
-    title: item.title || "等待解析",
+    title: taskTitle(item),
     source: host,
     status: statusLabels[item.status] || "排队中",
     progress: item.progress,
