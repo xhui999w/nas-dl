@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import inspect
 from sqlmodel import Field as DBField
@@ -508,6 +509,35 @@ def get_task(task_id: str) -> Task:
         if not task:
             raise HTTPException(404, "任务不存在")
         return task
+
+
+@app.get("/api/tasks/{task_id}/file", response_class=FileResponse)
+def download_task_file(task_id: str) -> FileResponse:
+    """Download a completed task result without exposing arbitrary NAS paths."""
+    with Session(engine) as session:
+        task = session.get(Task, task_id)
+        if not task:
+            raise HTTPException(404, "任务不存在")
+        if task.status != "completed":
+            raise HTTPException(409, "任务尚未完成")
+        output_path = task.output_path
+
+    if not output_path:
+        raise HTTPException(404, "任务没有可下载的文件")
+
+    download_root = DOWNLOAD_DIR.resolve()
+    candidate = Path(output_path).resolve()
+    if not candidate.is_relative_to(download_root):
+        raise HTTPException(403, "文件不在下载目录中")
+    if not candidate.is_file():
+        raise HTTPException(404, "下载文件不存在")
+
+    return FileResponse(
+        candidate,
+        filename=candidate.name,
+        media_type="application/octet-stream",
+        content_disposition_type="attachment",
+    )
 
 
 @app.post("/api/tasks", response_model=Task, status_code=201)
