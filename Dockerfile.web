@@ -16,8 +16,13 @@ FROM --platform=$BUILDPLATFORM node:22-alpine AS runtime-deps
 ARG TARGETARCH
 WORKDIR /deps
 COPY package*.json ./
-RUN npm ci --ignore-scripts --no-audit --no-fund \
-    --cpu="${TARGETARCH}" --os=linux --libc=musl
+RUN case "${TARGETARCH}" in \
+      amd64) npm_arch=x64 ;; \
+      arm64) npm_arch=arm64 ;; \
+      *) npm_arch="${TARGETARCH}" ;; \
+    esac \
+    && npm ci --ignore-scripts --no-audit --no-fund \
+      --cpu="${npm_arch}" --os=linux --libc=musl
 
 FROM node:22-alpine
 LABEL org.opencontainers.image.source="https://github.com/xhui999w/nas-dl"
