@@ -154,6 +154,18 @@ function fromApiTask(item: ApiTask): Task {
   };
 }
 
+function extractPastedUrl(input: string): string | null {
+  const candidate = input.match(/https?:\/\/[^\s"'<>]+/i)?.[0] || input.trim();
+  const cleaned = candidate.replace(/[\u3001\u3002\uFF0C\uFF01\uFF1F\uFF1B\uFF1A,.;!?]+$/u, "");
+  try {
+    const parsed = new URL(cleaned);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
 const DOWNLOAD_DESTINATION_KEY = "nasflow-download-destination:v2";
 const DEVICE_TASKS_KEY = "nasflow-device-tasks:v1";
 
@@ -345,14 +357,13 @@ export default function Home() {
 
   async function createTask(event: FormEvent) {
     event.preventDefault();
-    const value = url.trim();
-    if (!value) {
+    const pasted = url.trim();
+    if (!pasted) {
       setNotice("先粘贴一个视频、图集或作品集链接");
       return;
     }
-    try {
-      new URL(value);
-    } catch {
+    const value = extractPastedUrl(pasted);
+    if (!value) {
       setNotice("这个链接看起来不完整，请检查后重试");
       return;
     }
@@ -692,7 +703,7 @@ export default function Home() {
         {activeNav === "overview" && <><section className="capture-card">
           <div className="capture-copy"><span className="spark">✦</span><div><h2>把喜欢的内容，带回家。</h2><p>粘贴视频、图集或作品集链接，剩下的交给我们。</p></div></div>
           <form onSubmit={createTask}>
-            <label><span>↗</span><input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="在这里粘贴链接..." aria-label="媒体链接" /></label>
+            <label><span>↗</span><input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="粘贴链接或抖音分享文案..." aria-label="媒体链接" /></label>
             <button type="submit">开始下载 <span>→</span></button>
           </form>
           <div className="capture-options">
