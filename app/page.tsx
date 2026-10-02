@@ -87,10 +87,16 @@ const demoSubscriptions: Subscription[] = [
 ];
 
 const COOKIE_DOMAIN_PRESETS = [
-  { label: "抖音", domain: "douyin.com" },
-  { label: "哔哩哔哩", domain: "bilibili.com" },
   { label: "YouTube", domain: "youtube.com" },
+  { label: "TikTok", domain: "tiktok.com" },
   { label: "Instagram", domain: "instagram.com" },
+  { label: "Facebook", domain: "facebook.com" },
+  { label: "X", domain: "x.com" },
+  { label: "Vimeo", domain: "vimeo.com" },
+  { label: "Twitch", domain: "twitch.tv" },
+  { label: "Reddit", domain: "reddit.com" },
+  { label: "Dailymotion", domain: "dailymotion.com" },
+  { label: "Rumble", domain: "rumble.com" },
 ] as const;
 
 function formatBytes(value: number) {
@@ -884,7 +890,7 @@ export default function Home() {
                 <label>导入 cookies.txt<input type="file" accept=".txt,text/plain" onChange={importCookieFile} /></label>
               </div>
               <div className="cookie-domain-guide">
-                <div><strong>网站域名怎么填？</strong><span>只填域名，不要填写 https:// 或视频链接。</span></div>
+                <div><strong>常用视频网站</strong><span>点击网站可自动填写域名；也可以手动输入其他网站。</span></div>
                 <div>{COOKIE_DOMAIN_PRESETS.map((preset) => <button type="button" key={preset.domain} onClick={() => addCookieRow(preset.domain)}><b>{preset.label}</b><code>{preset.domain}</code></button>)}</div>
               </div>
               <div className="cookie-table">

@@ -45,6 +45,10 @@ PLACEHOLDER_TITLE = "等待解析"
 COOKIE_HOST_ALIASES = {
     "b23.tv": "bilibili.com",
     "youtu.be": "youtube.com",
+    "vm.tiktok.com": "tiktok.com",
+    "vt.tiktok.com": "tiktok.com",
+    "fb.watch": "facebook.com",
+    "twitter.com": "x.com",
 }
 
 
