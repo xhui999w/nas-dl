@@ -167,6 +167,12 @@ header p { margin: 0; color: var(--muted); font-size: 12px; }
 .history-status.completed { color: #2faf70; }
 .history-status.failed { color: #d94b4b; }
 .history-status.cancelled { color: #8f8b99; }
+.library-panel-title { gap: 14px; }
+.library-filter-tabs { display: flex; gap: 5px; margin-left: auto; }
+.library-filter-tabs button { display: flex; align-items: center; gap: 5px; height: 28px; padding: 0 9px; border: 0; border-radius: 7px; background: transparent; color: #85828f; cursor: pointer; font-size: 9px; }
+.library-filter-tabs button span { display: grid; place-items: center; min-width: 17px; height: 17px; padding: 0 4px; border-radius: 9px; background: #f0eef3; color: #9b98a4; font-size: 8px; }
+.library-filter-tabs button.active { background: var(--soft-purple); color: var(--purple); font-weight: 700; }
+.library-filter-tabs button.active span { background: white; color: var(--purple); }
 .history-actions { display: flex; gap: 6px; }
 .history-actions button, .history-actions a { display: grid; place-items: center; width: 24px; height: 24px; border: 0; border-radius: 7px; color: #6d4aff; background: #f1edff; cursor: pointer; }
 .task-row-actions .device-download, .history-actions .device-download { width: 27px; min-width: 27px; height: 27px; padding: 0; background: #e9f9f1; color: #249965; font-size: 16px; font-weight: 800; line-height: 1; text-decoration: none; }
@@ -363,6 +369,8 @@ footer a { color: var(--purple); }
   .destination-row { align-items: flex-start; }
   .preference-row { width: 100%; }
   .task-filter-tabs { overflow-x: auto; }
+  .library-panel-title { align-items: flex-start; flex-direction: column; }
+  .library-filter-tabs { width: 100%; overflow-x: auto; margin-left: 0; }
   .supported { width: 100%; }
   .device-picker { width: max-content; max-width: 100%; }
   .capture-select { justify-content: space-between; min-height: 38px; }

@@ -208,9 +208,11 @@ export default function Home() {
   const [downloadDevice, setDownloadDevice] = useState<"device" | "nas">("nas");
   const [deviceTaskIds, setDeviceTaskIds] = useState<Set<string>>(new Set());
   const [taskFilter, setTaskFilter] = useState<"active" | "running" | "queued" | "failed">("active");
+  const [historyFilter, setHistoryFilter] = useState<"all" | "completed" | "failed" | "cancelled">("all");
   const [saveToObsidian, setSaveToObsidian] = useState(false);
   const activeTasks = useMemo(() => tasks.filter((task) => task.status === "下载中" || task.status === "排队中"), [tasks]);
   const historyTasks = useMemo(() => tasks.filter((task) => task.status !== "下载中" && task.status !== "排队中"), [tasks]);
+  const filteredHistoryTasks = useMemo(() => historyTasks.filter((task) => historyFilter === "all" || (historyFilter === "completed" && task.status === "已完成") || (historyFilter === "failed" && task.status === "失败") || (historyFilter === "cancelled" && task.status === "已取消")), [historyFilter, historyTasks]);
   const active = activeTasks.length;
   const homeTasks = tasks.filter((task) => (task.status === "已完成" && deviceTaskIds.has(String(task.id))) || (task.status !== "已完成" && (taskFilter === "active" || (taskFilter === "running" && task.status === "下载中") || (taskFilter === "queued" && task.status === "排队中") || (taskFilter === "failed" && (task.status === "失败" || task.status === "已取消")))));
   const subscriptionsAddedToday = subscriptions.filter((item) => item.created_at && new Date(item.created_at).toDateString() === new Date().toDateString()).length;
@@ -759,9 +761,14 @@ export default function Home() {
         {activeNav === "library" && <section className="content-grid single-view">
 
           <div className="panel recent-panel" id="library">
-            <div className="panel-title"><div><h3>历史记录</h3><span>{historyTasks.length} 条记录</span></div><a href="#library">已完成 / 失败 / 已取消</a></div>
+            <div className="panel-title library-panel-title">
+              <div><h3>历史记录</h3><span>{filteredHistoryTasks.length} 条记录</span></div>
+              <div className="library-filter-tabs" role="tablist" aria-label="历史记录筛选">
+                {([['all', '全部', historyTasks.length], ['completed', '已完成', historyTasks.filter((task) => task.status === '已完成').length], ['failed', '失败', historyTasks.filter((task) => task.status === '失败').length], ['cancelled', '已取消', historyTasks.filter((task) => task.status === '已取消').length]] as const).map(([value, label, count]) => <button key={value} type="button" role="tab" aria-selected={historyFilter === value} className={historyFilter === value ? "active" : ""} onClick={() => setHistoryFilter(value)}>{label}<span>{count}</span></button>)}
+              </div>
+            </div>
             <div className="finished-list">
-              {historyTasks.map((task, index) => (
+              {filteredHistoryTasks.map((task, index) => (
                 <article key={task.id}>
                   <span className={`finished-cover cover-${index % 3 + 1}`}>{task.source.slice(0, 1)}</span>
                   <div><h4>{task.title}</h4><p>{task.source} · {task.meta}</p></div>
@@ -773,7 +780,7 @@ export default function Home() {
                   </div>
                 </article>
               ))}
-              {!historyTasks.length && <div className="empty">还没有历史任务。</div>}
+              {!filteredHistoryTasks.length && <div className="empty">当前筛选条件下没有历史记录。</div>}
             </div>
           </div>
         </section>}
