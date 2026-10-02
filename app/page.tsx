@@ -1,6 +1,6 @@
 "use client";
 
-import { ChangeEvent, FormEvent, MouseEvent as ReactMouseEvent, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, FormEvent, MouseEvent as ReactMouseEvent, useEffect, useMemo, useRef, useState } from "react";
 
 type Task = {
   id: number | string;
@@ -85,6 +85,13 @@ const demoSubscriptions: Subscription[] = [
   { id: 201, name: "科技频道每周更新", url: "https://www.youtube.com/@demo", enabled: true, interval_minutes: 360, quality: "1080p", folder: "订阅/科技" },
   { id: 202, name: "旅行影像收藏", url: "https://www.bilibili.com/space/demo", enabled: true, interval_minutes: 720, quality: "best", folder: "订阅/旅行" },
 ];
+
+const COOKIE_DOMAIN_PRESETS = [
+  { label: "抖音", domain: "douyin.com" },
+  { label: "哔哩哔哩", domain: "bilibili.com" },
+  { label: "YouTube", domain: "youtube.com" },
+  { label: "Instagram", domain: "instagram.com" },
+] as const;
 
 function formatBytes(value: number) {
   if (!Number.isFinite(value) || value <= 0) return "0 GB";
@@ -199,6 +206,7 @@ export default function Home() {
   const [subscriptionUrl, setSubscriptionUrl] = useState("");
   const [cookieOpen, setCookieOpen] = useState(false);
   const [cookieRows, setCookieRows] = useState<CookieRow[]>([]);
+  const cookieEditingRef = useRef(false);
   const [platformSwitches, setPlatformSwitches] = useState<Record<string, boolean>>({ youtube: true, bilibili: true, instagram: true, x: true });
   const [browsingSubscription, setBrowsingSubscription] = useState<Subscription | null>(null);
   const [subscriptionEntries, setSubscriptionEntries] = useState<SubscriptionEntry[]>([]);
@@ -342,7 +350,7 @@ export default function Home() {
           setTasks(items.map(fromApiTask));
           if (storageResponse.ok) setStorage((await storageResponse.json()) as StorageInfo);
           if (subscriptionsResponse.ok) setSubscriptions((await subscriptionsResponse.json()) as Subscription[]);
-          if (cookiesResponse.ok) {
+          if (cookiesResponse.ok && !cookieEditingRef.current) {
             const payload = (await cookiesResponse.json()) as { rules: Array<{ domain: string; cookie: string }> };
             setCookieRows(payload.rules.map((rule, index) => ({ id: index + 1, ...rule })));
           }
@@ -583,12 +591,28 @@ export default function Home() {
   }
 
   function updateCookieRow(id: number, field: "domain" | "cookie", value: string) {
+    cookieEditingRef.current = true;
     setCookieRows((current) => current.map((row) => row.id === id ? { ...row, [field]: value } : row));
+  }
+
+  function addCookieRow(domain = "") {
+    cookieEditingRef.current = true;
+    setCookieRows((current) => domain && current.some((row) => row.domain === domain) ? current : [...current, { id: Date.now(), domain, cookie: "" }]);
+  }
+
+  function removeCookieRow(id: number) {
+    cookieEditingRef.current = true;
+    setCookieRows((current) => current.filter((item) => item.id !== id));
+  }
+
+  function clearCookieRows() {
+    cookieEditingRef.current = true;
+    setCookieRows([]);
   }
 
   async function saveCookies() {
     const rules = cookieRows
-      .map(({ domain, cookie }) => ({ domain: domain.trim(), cookie: cookie.trim() }))
+      .map(({ domain, cookie }) => ({ domain: domain.trim().toLowerCase().replace(/^https?:\/\//, "").split("/")[0].replace(/^\./, "").replace(/^www\./, ""), cookie: cookie.trim() }))
       .filter((rule) => rule.domain || rule.cookie);
     if (rules.some((rule) => !rule.domain || !rule.cookie)) {
       setNotice("每一行都需要同时填写网站域名和 Cookie");
@@ -596,6 +620,7 @@ export default function Home() {
     }
     if (new URLSearchParams(window.location.search).get("demo") === "1") {
       setNotice("演示模式：Cookie 配置已模拟保存，不会写入电脑或 NAS");
+      cookieEditingRef.current = false;
       setCookieOpen(false);
       return;
     }
@@ -607,6 +632,7 @@ export default function Home() {
         body: JSON.stringify({ rules }),
       });
       if (!response.ok) throw new Error("save failed");
+      cookieEditingRef.current = false;
       setNotice("Cookie 已保存在 NASFlow 本地数据目录，下载时会按域名自动使用");
       setCookieOpen(false);
     } catch {
@@ -632,6 +658,7 @@ export default function Home() {
         grouped.set(domain, [...(grouped.get(domain) || []), `${name}=${value}`]);
       }
       if (!grouped.size) throw new Error("invalid cookies file");
+      cookieEditingRef.current = true;
       setCookieRows(Array.from(grouped.entries()).map(([domain, pairs], index) => ({ id: Date.now() + index, domain, cookie: pairs.join("; ") })));
       setNotice(`已从插件导出的文件中识别 ${grouped.size} 个网站，请检查后保存`);
     } catch {
@@ -856,18 +883,22 @@ export default function Home() {
                 <div><strong>通过浏览器插件获取</strong><p>推荐使用 Get cookies.txt LOCALLY 等本地导出插件，在已登录的网站导出 Netscape cookies.txt 后直接导入。</p></div>
                 <label>导入 cookies.txt<input type="file" accept=".txt,text/plain" onChange={importCookieFile} /></label>
               </div>
+              <div className="cookie-domain-guide">
+                <div><strong>网站域名怎么填？</strong><span>只填域名，不要填写 https:// 或视频链接。</span></div>
+                <div>{COOKIE_DOMAIN_PRESETS.map((preset) => <button type="button" key={preset.domain} onClick={() => addCookieRow(preset.domain)}><b>{preset.label}</b><code>{preset.domain}</code></button>)}</div>
+              </div>
               <div className="cookie-table">
                 <div className="cookie-table-head"><span>网站域名</span><span>Cookie 内容</span><span /></div>
                 {cookieRows.map((row) => (
                   <div className="cookie-row" key={row.id}>
-                    <input value={row.domain} onChange={(event) => updateCookieRow(row.id, "domain", event.target.value)} placeholder="例如 youtube.com" aria-label="网站域名" />
+                    <input value={row.domain} onChange={(event) => updateCookieRow(row.id, "domain", event.target.value)} placeholder="例如 douyin.com" aria-label="网站域名" />
                     <input type="password" value={row.cookie} onChange={(event) => updateCookieRow(row.id, "cookie", event.target.value)} placeholder="粘贴 Cookie 字符串" aria-label={`${row.domain || "网站"} Cookie`} />
-                    <button onClick={() => setCookieRows((current) => current.filter((item) => item.id !== row.id))} aria-label={`删除 ${row.domain || "Cookie 行"}`}>×</button>
+                    <button onClick={() => removeCookieRow(row.id)} aria-label={`删除 ${row.domain || "Cookie 行"}`}>×</button>
                   </div>
                 ))}
               </div>
-              <button className="add-cookie-row" onClick={() => setCookieRows((current) => [...current, { id: Date.now(), domain: "", cookie: "" }])}>＋ 添加一个网站</button>
-              <div className="cookie-actions"><button onClick={() => setCookieRows([])}>清空</button><button className="primary" onClick={saveCookies}>保存 Cookie 配置</button></div>
+              <button className="add-cookie-row" onClick={() => addCookieRow()}>＋ 添加一个网站</button>
+              <div className="cookie-actions"><button onClick={clearCookieRows}>清空</button><button className="primary" onClick={saveCookies}>保存 Cookie 配置</button></div>
             </section>
           </div>
         )}

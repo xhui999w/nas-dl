@@ -42,6 +42,10 @@ executor = ThreadPoolExecutor(max_workers=MAX_WORKERS, thread_name_prefix="nasfl
 processes: dict[str, subprocess.Popen[str]] = {}
 process_lock = threading.Lock()
 PLACEHOLDER_TITLE = "等待解析"
+COOKIE_HOST_ALIASES = {
+    "b23.tv": "bilibili.com",
+    "youtu.be": "youtube.com",
+}
 
 
 def utcnow() -> datetime:
@@ -186,6 +190,10 @@ def platform_for_url(url: str) -> str:
 
 def cookie_file_for_url(url: str) -> Path | None:
     host = (urlparse(url).hostname or "").lower().strip(".")
+    candidate_hosts = {host}
+    for short_host, canonical_host in COOKIE_HOST_ALIASES.items():
+        if host == short_host or host.endswith(f".{short_host}"):
+            candidate_hosts.add(canonical_host)
     with Session(engine) as session:
         row = session.get(Setting, "cookies")
     if not row:
@@ -194,7 +202,7 @@ def cookie_file_for_url(url: str) -> Path | None:
         payload = CookiesPayload.model_validate_json(row.value)
     except Exception:
         return None
-    match = next((rule for rule in payload.rules if host == rule.domain or host.endswith(f".{rule.domain}")), None)
+    match = next((rule for rule in payload.rules if any(candidate == rule.domain or candidate.endswith(f".{rule.domain}") for candidate in candidate_hosts)), None)
     if not match:
         return None
     cookie_dir = DATA_DIR / "cookies"
