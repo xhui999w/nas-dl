@@ -772,7 +772,7 @@ export default function Home() {
 
         <section className="panel task-panel download-center-tasks" id="tasks">
             <div className="panel-title"><div><h3>当前下载</h3><span>{active} 个进行中 · {tasks.length} 个全部任务</span></div><span className={`connection-badge ${connected ? "online" : ""}`}>{connected ? "服务已连接" : "服务未连接"}</span></div>
-            <div className="task-filter-tabs" aria-label="任务状态筛选">{([['active', '进行中', tasks.filter((task) => task.status !== '已完成').length], ['running', '下载中', tasks.filter((task) => task.status === '下载中').length], ['queued', '等待中', tasks.filter((task) => task.status === '排队中').length], ['failed', '失败或取消', tasks.filter((task) => task.status === '失败' || task.status === '已取消').length]] as const).map(([value, label, count]) => <button key={value} className={taskFilter === value ? "active" : ""} onClick={() => setTaskFilter(value)}>{label}<span>{count}</span></button>)}</div>
+            <div className="task-filter-tabs" aria-label="任务状态筛选">{([['active', '进行中', active], ['running', '下载中', tasks.filter((task) => task.status === '下载中').length], ['queued', '等待中', tasks.filter((task) => task.status === '排队中').length], ['failed', '失败或取消', tasks.filter((task) => task.status === '失败' || task.status === '已取消').length]] as const).map(([value, label, count]) => <button key={value} className={taskFilter === value ? "active" : ""} onClick={() => setTaskFilter(value)}>{label}<span>{count}</span></button>)}</div>
             <div className="task-list">
               {homeTasks.map((task) => (
                 <article className="task" key={task.id}>

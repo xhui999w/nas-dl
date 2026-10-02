@@ -403,7 +403,7 @@ def build_command(task: Task) -> tuple[list[str], Path]:
         "audio": "ba/b",
     }
     command = [
-        sys.executable, "-m", "yt_dlp", "--newline", "--write-info-json",
+        sys.executable, "-m", "yt_dlp", "--newline", "--progress", "--write-info-json",
         "--write-thumbnail",
         "--print", "before_dl:__NASFLOW_TITLE__%(title)s",
         "--print", "after_move:__NASFLOW_FILE__%(filepath)s",
@@ -481,7 +481,7 @@ def run_download(task_id: str) -> None:
             return
         command, target = build_command(task)
 
-    update_task(task_id, status="running", error=None, error_type=None, output_path=str(target))
+    update_task(task_id, status="running", speed=None, eta=None, error=None, error_type=None, output_path=str(target))
     try:
         process = subprocess.Popen(
             command,
@@ -710,6 +710,8 @@ def retry_task(task_id: str) -> Task:
             raise HTTPException(409, "只有失败或取消的任务可以重试")
         task.status = "queued"
         task.progress = 0
+        task.speed = None
+        task.eta = None
         task.error = None
         task.error_type = None
         task.retry_count += 1
