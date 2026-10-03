@@ -396,6 +396,7 @@ def build_command(task: Task) -> tuple[list[str], Path]:
         return command, target
 
     template = str(target / "%(uploader|未知作者)s/%(title)s [%(id)s].%(ext)s")
+    infojson_template = str(target / "%(uploader|未知作者)s/%(id)s.info.json")
     formats = {
         "best": "bv*+ba/b",
         "4k": "bv*[height<=2160]+ba/b[height<=2160]",
@@ -408,6 +409,7 @@ def build_command(task: Task) -> tuple[list[str], Path]:
         "--print", "before_dl:__NASFLOW_TITLE__%(title)s",
         "--print", "after_move:__NASFLOW_FILE__%(filepath)s",
         "-o", template,
+        "-o", f"infojson:{infojson_template}",
         "-f", formats.get(task.quality, formats["best"]),
     ]
     if task.subscription_id:
