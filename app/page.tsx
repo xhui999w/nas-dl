@@ -194,9 +194,6 @@ function extractPastedUrl(input: string): string | null {
   }
 }
 
-const DOWNLOAD_DESTINATION_KEY = "nasflow-download-destination:v2";
-const DEVICE_TASKS_KEY = "nasflow-device-tasks:v1";
-
 export default function Home() {
   const [url, setUrl] = useState("");
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -219,8 +216,6 @@ export default function Home() {
   const [selectedEntries, setSelectedEntries] = useState<Set<string>>(new Set());
   const [entriesLoading, setEntriesLoading] = useState(false);
   const [showSubscriptionForm, setShowSubscriptionForm] = useState(false);
-  const [downloadDevice, setDownloadDevice] = useState<"device" | "nas">("nas");
-  const [deviceTaskIds, setDeviceTaskIds] = useState<Set<string>>(new Set());
   const [taskFilter, setTaskFilter] = useState<"active" | "running" | "queued" | "failed">("active");
   const [historyFilter, setHistoryFilter] = useState<"all" | "completed" | "failed" | "cancelled">("all");
   const [saveToObsidian, setSaveToObsidian] = useState(false);
@@ -228,7 +223,7 @@ export default function Home() {
   const historyTasks = useMemo(() => tasks.filter((task) => task.status !== "下载中" && task.status !== "排队中"), [tasks]);
   const filteredHistoryTasks = useMemo(() => historyTasks.filter((task) => historyFilter === "all" || (historyFilter === "completed" && task.status === "已完成") || (historyFilter === "failed" && task.status === "失败") || (historyFilter === "cancelled" && task.status === "已取消")), [historyFilter, historyTasks]);
   const active = activeTasks.length;
-  const homeTasks = tasks.filter((task) => (task.status === "已完成" && deviceTaskIds.has(String(task.id))) || (task.status !== "已完成" && (taskFilter === "active" || (taskFilter === "running" && task.status === "下载中") || (taskFilter === "queued" && task.status === "排队中") || (taskFilter === "failed" && (task.status === "失败" || task.status === "已取消")))));
+  const homeTasks = tasks.filter((task) => task.status !== "已完成" && (taskFilter === "active" || (taskFilter === "running" && task.status === "下载中") || (taskFilter === "queued" && task.status === "排队中") || (taskFilter === "failed" && (task.status === "失败" || task.status === "已取消"))));
   const subscriptionsAddedToday = subscriptions.filter((item) => item.created_at && new Date(item.created_at).toDateString() === new Date().toDateString()).length;
   const pendingSubscriptions = subscriptions.filter((item) => item.enabled && !item.last_checked_at).length;
   const latestSubscriptionSync = subscriptions.map((item) => item.last_checked_at).filter(Boolean).sort().at(-1);
@@ -238,53 +233,12 @@ export default function Home() {
   }
 
   useEffect(() => {
-    let disposed = false;
-    queueMicrotask(() => {
-      if (disposed) return;
-      try {
-        const savedDevice = window.localStorage.getItem(DOWNLOAD_DESTINATION_KEY) || window.localStorage.getItem("nasflow-download-device");
-        if (savedDevice === "device" || savedDevice === "computer") setDownloadDevice("device");
-        if (savedDevice === "nas") setDownloadDevice("nas");
-        window.localStorage.removeItem("nasflow-nas-api");
-        const savedDeviceTasks = JSON.parse(window.localStorage.getItem(DEVICE_TASKS_KEY) || "[]") as unknown;
-        if (Array.isArray(savedDeviceTasks)) setDeviceTaskIds(new Set(savedDeviceTasks.filter((id): id is string => typeof id === "string")));
-      } catch {
-        // Private browsing can disable localStorage; the current session still works.
-      }
-    });
-    return () => { disposed = true; };
-  }, []);
-
-  function changeDownloadDevice(device: "device" | "nas") {
-    setDownloadDevice(device);
-    if (device === "device") setSaveToObsidian(false);
-    setNotice(device === "device"
-      ? "文件会先由 NAS 准备；完成后点击“保存到此设备”，浏览器再下载到这台电脑或手机"
-      : "下载完成后文件会保存在 NAS 下载目录");
     try {
-      window.localStorage.setItem(DOWNLOAD_DESTINATION_KEY, device);
-      window.localStorage.removeItem("nasflow-download-device");
+      window.localStorage.removeItem("nasflow-nas-api");
     } catch {
-      // Keep the selection for this session when storage is unavailable.
+      // Private browsing can disable localStorage.
     }
-  }
-
-  function rememberDeviceTask(taskId: string) {
-    setDeviceTaskIds((current) => {
-      const next = new Set(current).add(taskId);
-      try { window.localStorage.setItem(DEVICE_TASKS_KEY, JSON.stringify([...next])); } catch {}
-      return next;
-    });
-  }
-
-  function markDeviceTaskSaved(taskId: string) {
-    setDeviceTaskIds((current) => {
-      const next = new Set(current);
-      next.delete(taskId);
-      try { window.localStorage.setItem(DEVICE_TASKS_KEY, JSON.stringify([...next])); } catch {}
-      return next;
-    });
-  }
+  }, []);
 
   function taskFileUrl(task: Task) {
     return `${API_BASE}/api/tasks/${encodeURIComponent(String(task.id))}/file`;
@@ -292,10 +246,7 @@ export default function Home() {
 
   async function saveTaskToDevice(event: ReactMouseEvent<HTMLAnchorElement>, task: Task) {
     const picker = (window as SavePickerWindow).showSaveFilePicker;
-    if (!picker) {
-      markDeviceTaskSaved(String(task.id));
-      return;
-    }
+    if (!picker) return;
 
     event.preventDefault();
     const outputName = task.outputPath?.split(/[\\/]/).pop();
@@ -307,7 +258,6 @@ export default function Home() {
       if (!response.ok || !response.body) throw new Error("download failed");
       const writable = await handle.createWritable();
       await response.body.pipeTo(writable);
-      markDeviceTaskSaved(String(task.id));
       setNotice("文件已保存到当前设备");
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
@@ -432,12 +382,7 @@ export default function Home() {
       const created = (await response.json()) as ApiTask;
       const createdTask = fromApiTask(created);
       setTasks((current) => [createdTask, ...current.filter((task) => task.id !== optimisticTask.id)]);
-      if (downloadDevice === "device") {
-        rememberDeviceTask(created.id);
-        setNotice("NAS 正在准备文件，完成后点击“保存到此设备”即可下载");
-      } else {
-        setNotice("任务已进入下载队列，完成后保存在 NAS 下载目录");
-      }
+      setNotice("任务已进入下载队列，完成后可在媒体库保存到此设备");
     } catch {
       setTasks((current) => current.filter((task) => task.id !== optimisticTask.id));
       setUrl(value);
@@ -751,20 +696,19 @@ export default function Home() {
         </header>
 
         {activeNav === "overview" && <><section className="capture-card">
-          <div className="capture-copy"><span className="spark">✦</span><div><h2>把喜欢的内容，带回家。</h2><p>粘贴视频、图集或作品集链接，剩下的交给我们。</p></div></div>
+          <div className="capture-copy"><span className="spark">✦</span><div><h2>把喜欢的内容，带回家。</h2><p>粘贴视频、图集或作品集链接；完成后可在媒体库保存到电脑或手机。</p></div></div>
           <form onSubmit={createTask}>
             <label><span>↗</span><input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="粘贴链接或抖音分享文案..." aria-label="媒体链接" /></label>
             <button type="submit">开始下载 <span>→</span></button>
           </form>
           <div className="capture-options">
-            <div className="capture-option-row destination-row">
-              <div className="device-picker" aria-label="保存位置"><span>保存到</span><button className={downloadDevice === "device" ? "active" : ""} onClick={() => changeDownloadDevice("device")} type="button">当前设备</button><button className={downloadDevice === "nas" ? "active" : ""} onClick={() => changeDownloadDevice("nas")} type="button">NAS</button></div>
+            <div className="capture-option-row supported-row">
               <div className="supported"><span className="mini yt">▶</span><span className="mini bilibili">B</span><span className="mini insta">◎</span><span className="mini x">𝕏</span><span className="mini note">R</span><span>支持 1000+ 网站</span></div>
             </div>
             <div className="capture-option-row preference-row">
               <label className="capture-select">NAS 目录 <select aria-label="保存目录"><option>{saveToObsidian ? "/downloads/Obsidian视频" : "/downloads/自动分类"}</option><option>/downloads/视频</option><option>/downloads/图片</option></select></label>
               <label className="capture-select">画质 <select value={quality} onChange={(e) => setQuality(e.target.value)} aria-label="下载画质"><option>自动选择最佳画质</option><option>最高 4K</option><option>最高 1080P</option><option>仅音频</option></select></label>
-              <label className={`obsidian-option ${downloadDevice !== "nas" ? "disabled" : ""}`} title={downloadDevice !== "nas" ? "保存到 NAS 后才可同时创建 Obsidian 笔记" : "视频仍保存在媒体目录，只在 Obsidian 创建索引笔记"}><span className="obsidian-logo">O</span><span><b>同时收藏到 Obsidian</b><small>{downloadDevice === "nas" ? "创建视频笔记，视频仍单独保存" : "切换到“NAS”后可用"}</small></span><input type="checkbox" checked={saveToObsidian} disabled={downloadDevice !== "nas"} onChange={(event) => setSaveToObsidian(event.target.checked)} aria-label="同时收藏到 Obsidian" /></label>
+              <label className="obsidian-option" title="视频仍保存在媒体目录，只在 Obsidian 创建索引笔记"><span className="obsidian-logo">O</span><span><b>同时收藏到 Obsidian</b><small>创建视频笔记，视频仍单独保存</small></span><input type="checkbox" checked={saveToObsidian} onChange={(event) => setSaveToObsidian(event.target.checked)} aria-label="同时收藏到 Obsidian" /></label>
             </div>
           </div>
           {notice && <p className="notice" role="status">{notice}</p>}
@@ -910,7 +854,7 @@ export default function Home() {
         )}
 
         {activeNav === "notifications" && <section className="standalone-view simple-page"><h2>通知推送</h2><p>下载完成、失败以及订阅发现新内容时，都可以在这里统一配置提醒。</p><div className="simple-card"><strong>推送渠道</strong><span>该功能正在接入，后续可独立启用，不会挤在下载页面中。</span></div></section>}
-        {activeNav === "settings" && <section className="standalone-view simple-page"><h2>系统设置</h2><p>NASFlow 会自动连接下载服务。选择“当前设备”时，NAS 准备好文件后由浏览器保存到这台电脑或手机。</p><div className="device-settings"><label><span>连接方式</span><input value="自动安全连接" readOnly /></label><div className="device-settings-footer"><span><i className={connected ? "online" : ""} />保存位置：{downloadDevice === "nas" ? "NAS" : "当前设备"} · {connected ? "服务正常" : "无法连接"}</span></div></div></section>}
+        {activeNav === "settings" && <section className="standalone-view simple-page"><h2>系统设置</h2><p>下载任务先保存在 NAS；完成后可在媒体库将文件保存到这台电脑或手机。</p><div className="device-settings"><label><span>连接方式</span><input value="自动安全连接" readOnly /></label><div className="device-settings-footer"><span><i className={connected ? "online" : ""} />保存位置：NAS · {connected ? "服务正常" : "无法连接"}</span></div></div></section>}
 
         <footer><p><i /> NASFlow 服务运行中 · 已连续运行 12 天 8 小时</p><div><span>yt-dlp <b>最新版</b></span><span>gallery-dl <b>最新版</b></span><a href="#help">需要帮助？</a></div></footer>
       </section>
