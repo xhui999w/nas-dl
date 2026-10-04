@@ -63,7 +63,7 @@ export default function MediaPlayer({ id }: { id: string }) {
         try {
           const saved = JSON.parse(localStorage.getItem(storageKey) || "null");
           const position = saved?.position;
-          if (typeof position === "number" && Number.isFinite(position) && position > 0 && position < video.duration - 3) {
+          if (typeof position === "number" && Number.isFinite(position) && position > 0 && position < video.duration) {
             video.currentTime = position;
             const minutes = Math.floor(position / 60);
             const seconds = Math.floor(position % 60).toString().padStart(2, "0");
@@ -74,7 +74,7 @@ export default function MediaPlayer({ id }: { id: string }) {
       const save = () => {
         if (!restored || video.error || !Number.isFinite(video.currentTime)) return;
         try {
-          const finished = video.ended || video.currentTime >= video.duration - 3;
+          const finished = video.ended;
           if (finished) localStorage.removeItem(storageKey);
           else localStorage.setItem(storageKey, JSON.stringify({ position: video.currentTime }));
         } catch { /* Private mode/storage quotas must not interrupt playback. */ }
