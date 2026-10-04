@@ -1,6 +1,7 @@
 "use client";
 
 import { ChangeEvent, FormEvent, MouseEvent as ReactMouseEvent, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 
 type Task = {
   id: number | string;
@@ -17,6 +18,7 @@ type Task = {
   obsidianNotePath?: string;
   obsidianError?: string;
   outputPath?: string;
+  mediaAvailable?: boolean;
 };
 
 const demoTasks: Task[] = [
@@ -47,6 +49,7 @@ type ApiTask = {
   obsidian_note_path?: string;
   obsidian_error?: string;
   output_path?: string;
+  media_available?: boolean;
 };
 
 type StorageInfo = {
@@ -179,6 +182,7 @@ function fromApiTask(item: ApiTask): Task {
     obsidianNotePath: item.obsidian_note_path,
     obsidianError: item.obsidian_error,
     outputPath: item.output_path,
+    mediaAvailable: item.media_available,
   };
 }
 
@@ -751,6 +755,7 @@ export default function Home() {
                   <div><h4>{task.title}</h4><p>{task.source} · {task.meta}</p></div>
                   <time className={`history-status ${task.backendStatus || ""}`}>{task.status}</time>
                   <div className="history-actions">
+                    {task.status === "已完成" && task.mediaAvailable && typeof task.id === "string" && <Link className="media-play" href={`/media/play/${encodeURIComponent(task.id)}`} prefetch={false} aria-label={`播放 ${task.title}`} title="播放"><span aria-hidden="true">▶</span></Link>}
                     {task.status === "已完成" && typeof task.id === "string" && <a className="device-download" href={taskFileUrl(task)} download onClick={(event) => saveTaskToDevice(event, task)} aria-label={`保存 ${task.title} 到当前设备`} title="保存到此设备"><span aria-hidden="true">⇩</span></a>}
                     {(task.status === "失败" || task.status === "已取消") && <button onClick={() => retryTask(task)} aria-label={`重试 ${task.title}`}>↻</button>}
                     <button className="delete-button" onClick={() => deleteTask(task)} aria-label={`删除 ${task.title}`}>×</button>

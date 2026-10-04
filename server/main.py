@@ -18,12 +18,13 @@ from urllib.parse import urlparse
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field, field_serializer
 from sqlalchemy import inspect
 from sqlmodel import Field as DBField
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from server.download_errors import classify_download_error
+from server.media import resolve_task_file, video_available, video_metadata, UNSUPPORTED_MESSAGE
 
 DATA_DIR = Path(os.getenv("NASFLOW_DATA", "/data"))
 DOWNLOAD_DIR = Path(os.getenv("NASFLOW_DOWNLOADS", "/downloads"))
@@ -78,6 +79,24 @@ class Task(SQLModel, table=True):
     obsidian_error: str | None = None
     created_at: datetime = DBField(default_factory=utcnow)
     updated_at: datetime = DBField(default_factory=utcnow)
+
+
+class TaskView(Task):
+    """API-only fields; no database migration or new stored paths."""
+
+    @computed_field
+    @property
+    def media_available(self) -> bool:
+        return video_available(self.status, self.output_path, DOWNLOAD_DIR)
+
+    @field_serializer("output_path")
+    def public_filename(self, value: str | None) -> str | None:
+        return Path(value).name if value else None
+
+    @field_serializer("log_tail")
+    def private_download_logs(self, value: str) -> str:
+        # Downloader logs can contain absolute filesystem paths and credentials.
+        return ""
 
 
 class Subscription(SQLModel, table=True):
@@ -615,7 +634,7 @@ def storage() -> dict[str, int | float | str]:
     }
 
 
-@app.get("/api/tasks", response_model=list[Task])
+@app.get("/api/tasks", response_model=list[TaskView])
 def list_tasks(status: str | None = None) -> list[Task]:
     with Session(engine) as session:
         statement = select(Task).order_by(Task.created_at.desc())
@@ -624,7 +643,7 @@ def list_tasks(status: str | None = None) -> list[Task]:
         return list(session.exec(statement).all())
 
 
-@app.get("/api/tasks/{task_id}", response_model=Task)
+@app.get("/api/tasks/{task_id}", response_model=TaskView)
 def get_task(task_id: str) -> Task:
     with Session(engine) as session:
         task = session.get(Task, task_id)
@@ -662,7 +681,29 @@ def download_task_file(task_id: str) -> FileResponse:
     )
 
 
-@app.post("/api/tasks", response_model=Task, status_code=201)
+@app.get("/api/media/{task_id}")
+def get_media(task_id: str) -> dict[str, object]:
+    task = get_task(task_id)
+    path = resolve_task_file(task.status, task.output_path, DOWNLOAD_DIR)
+    if not video_available(task.status, task.output_path, DOWNLOAD_DIR):
+        raise HTTPException(415, UNSUPPORTED_MESSAGE)
+    return {"id": task.id, "title": task.title, "source": platform_for_url(task.url), **video_metadata(path)}
+
+
+@app.api_route("/api/media/{task_id}/stream", methods=["GET", "HEAD"], response_class=FileResponse)
+def stream_media(task_id: str) -> FileResponse:
+    task = get_task(task_id)
+    path = resolve_task_file(task.status, task.output_path, DOWNLOAD_DIR)
+    media = video_metadata(path)
+    if not media["supported"]:
+        raise HTTPException(415, UNSUPPORTED_MESSAGE)
+    # Starlette FileResponse reads bounded chunks and implements Range/If-Range,
+    # 206 Content-Range, 416 for unsatisfiable ranges, and bodyless HEAD responses.
+    return FileResponse(path, media_type=str(media["mime_type"]), filename=path.name,
+                        content_disposition_type="inline", headers={"X-Content-Type-Options": "nosniff"})
+
+
+@app.post("/api/tasks", response_model=TaskView, status_code=201)
 def create_task(payload: CreateTask) -> Task:
     if not valid_url(payload.url):
         raise HTTPException(422, "请输入有效的 HTTP/HTTPS 链接")
@@ -681,7 +722,7 @@ def create_task(payload: CreateTask) -> Task:
     return task
 
 
-@app.post("/api/tasks/{task_id}/cancel", response_model=Task)
+@app.post("/api/tasks/{task_id}/cancel", response_model=TaskView)
 def cancel_task(task_id: str) -> Task:
     with Session(engine) as session:
         task = session.get(Task, task_id)
@@ -702,7 +743,7 @@ def cancel_task(task_id: str) -> Task:
     return task
 
 
-@app.post("/api/tasks/{task_id}/retry", response_model=Task)
+@app.post("/api/tasks/{task_id}/retry", response_model=TaskView)
 def retry_task(task_id: str) -> Task:
     with Session(engine) as session:
         task = session.get(Task, task_id)
