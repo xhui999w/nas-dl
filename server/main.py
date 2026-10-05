@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import mimetypes
 import os
 import re
 import secrets
@@ -129,6 +130,12 @@ class MediaShare(SQLModel, table=True):
 
 
 class MediaShareSession(SQLModel, table=True):
+    token_hash: str = DBField(primary_key=True)
+    share_id: str = DBField(index=True)
+    expires_at: float
+
+
+class MediaShareExternalToken(SQLModel, table=True):
     token_hash: str = DBField(primary_key=True)
     share_id: str = DBField(index=True)
     expires_at: float
@@ -714,13 +721,14 @@ def get_media(task_id: str) -> dict[str, object]:
 @app.api_route("/api/media/{task_id}/stream", methods=["GET", "HEAD"], response_class=FileResponse)
 def stream_media(task_id: str) -> FileResponse:
     task = get_task(task_id)
+    if not video_available(task.status, task.output_path, DOWNLOAD_DIR):
+        raise HTTPException(415, UNSUPPORTED_MESSAGE)
     path = resolve_task_file(task.status, task.output_path, DOWNLOAD_DIR)
     media = video_metadata(path)
-    if not media["supported"]:
-        raise HTTPException(415, UNSUPPORTED_MESSAGE)
     # Starlette FileResponse reads bounded chunks and implements Range/If-Range,
     # 206 Content-Range, 416 for unsatisfiable ranges, and bodyless HEAD responses.
-    return FileResponse(path, media_type=str(media["mime_type"]), filename=path.name,
+    media_type = media["mime_type"] or mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    return FileResponse(path, media_type=str(media_type), filename=path.name,
                         content_disposition_type="inline", headers={"X-Content-Type-Options": "nosniff"})
 
 
@@ -738,8 +746,6 @@ def _share_media(token: str) -> tuple[MediaShare, Task, Path, dict[str, object]]
     task = get_task(share.task_id)
     path = resolve_task_file(task.status, task.output_path, DOWNLOAD_DIR)
     media = video_metadata(path)
-    if not media["supported"]:
-        raise HTTPException(415, UNSUPPORTED_MESSAGE)
     return share, task, path, media
 
 
@@ -758,9 +764,6 @@ def create_media_share(task_id: str, payload: CreateMediaShare) -> dict[str, obj
     if not video_available(task.status, task.output_path, DOWNLOAD_DIR):
         raise HTTPException(415, UNSUPPORTED_MESSAGE)
     path = resolve_task_file(task.status, task.output_path, DOWNLOAD_DIR)
-    media = video_metadata(path)
-    if not media["supported"]:
-        raise HTTPException(415, UNSUPPORTED_MESSAGE)
     token = secrets.token_urlsafe(32)
     share = MediaShare(task_id=task_id, token_hash=hashlib.sha256(token.encode("utf-8")).hexdigest(), max_plays=payload.plays)
     with Session(engine) as session:
@@ -780,6 +783,7 @@ def revoke_media_share(share_id: str) -> dict[str, bool]:
         share.revoked = True
         session.add(share)
         session.exec(delete(MediaShareSession).where(MediaShareSession.share_id == share_id))
+        session.exec(delete(MediaShareExternalToken).where(MediaShareExternalToken.share_id == share_id))
         session.commit()
     return {"revoked": True}
 
@@ -800,13 +804,22 @@ def start_shared_playback(token: str, request: Request, response: Response) -> d
     current_time = utcnow().timestamp()
     with Session(engine) as session:
         session.exec(delete(MediaShareSession).where(MediaShareSession.expires_at <= current_time))
+        session.exec(delete(MediaShareExternalToken).where(MediaShareExternalToken.expires_at <= current_time))
         if existing_cookie:
             existing_hash = hashlib.sha256(existing_cookie.encode("utf-8")).hexdigest()
             active_session = session.get(MediaShareSession, existing_hash)
             if active_session and active_session.share_id == share.id and active_session.expires_at > current_time:
+                external_key = secrets.token_urlsafe(32)
+                session.add(MediaShareExternalToken(
+                    token_hash=hashlib.sha256(external_key.encode("utf-8")).hexdigest(),
+                    share_id=share.id,
+                    expires_at=current_time + 8 * 60 * 60,
+                ))
+                session.commit()
                 return {"started": True, "already_counted": True,
                         "remaining_plays": max(0, share.max_plays - share.play_count),
-                        "title": task.title, "source": platform_for_url(task.url), **media}
+                        "external_key": external_key, "title": task.title,
+                        "source": platform_for_url(task.url), **media}
 
         reserved_id = session.exec(
             update(MediaShare)
@@ -820,13 +833,19 @@ def start_shared_playback(token: str, request: Request, response: Response) -> d
         new_cookie = secrets.token_urlsafe(32)
         session.add(MediaShareSession(token_hash=hashlib.sha256(new_cookie.encode("utf-8")).hexdigest(),
                                       share_id=share.id, expires_at=current_time + 8 * 60 * 60))
+        external_key = secrets.token_urlsafe(32)
+        session.add(MediaShareExternalToken(
+            token_hash=hashlib.sha256(external_key.encode("utf-8")).hexdigest(),
+            share_id=share.id,
+            expires_at=current_time + 8 * 60 * 60,
+        ))
         session.commit()
         remaining = max(0, current_share.max_plays - current_share.play_count)
     response.set_cookie(share_cookie, new_cookie, max_age=8 * 60 * 60,
                         httponly=True, secure=True, samesite="lax",
                         path=f"/nas-api/api/shares/{token}/")
     return {"started": True, "already_counted": False, "remaining_plays": remaining,
-            "title": task.title, "source": platform_for_url(task.url), **media}
+            "external_key": external_key, "title": task.title, "source": platform_for_url(task.url), **media}
 
 
 @app.api_route("/api/shares/{token}/stream", methods=["GET", "HEAD"], response_class=FileResponse)
@@ -840,7 +859,21 @@ def stream_shared_media(token: str, request: Request) -> FileResponse:
         active_session = session.get(MediaShareSession, session_hash)
         if not active_session or active_session.share_id != share.id or active_session.expires_at <= utcnow().timestamp():
             raise HTTPException(403, "播放会话已过期，请重新点击开始播放")
-    return FileResponse(path, media_type=str(media["mime_type"]), filename=path.name,
+    media_type = media["mime_type"] or mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    return FileResponse(path, media_type=str(media_type), filename=path.name,
+                        content_disposition_type="inline", headers={"X-Content-Type-Options": "nosniff"})
+
+
+@app.api_route("/api/shares/{token}/external-stream", methods=["GET", "HEAD"], response_class=FileResponse)
+def stream_shared_media_externally(token: str, key: str) -> FileResponse:
+    share, _task, path, media = _share_media(token)
+    key_hash = hashlib.sha256(key.encode("utf-8")).hexdigest()
+    with Session(engine) as session:
+        external_token = session.get(MediaShareExternalToken, key_hash)
+        if not external_token or external_token.share_id != share.id or external_token.expires_at <= utcnow().timestamp():
+            raise HTTPException(403, "外部播放器授权已过期，请回到分享页重新开始播放")
+    media_type = media["mime_type"] or mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    return FileResponse(path, media_type=str(media_type), filename=path.name,
                         content_disposition_type="inline", headers={"X-Content-Type-Options": "nosniff"})
 
 

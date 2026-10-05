@@ -12,6 +12,9 @@
 .share-start p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
 .share-start button { flex: none; min-height: 42px; padding: 0 18px; border: 0; border-radius: 10px; background: var(--purple); color: white; font-size: 13px; font-weight: 700; cursor: pointer; }
 .share-start button:disabled { opacity: .65; cursor: wait; }
+.external-player { display: flex; align-items: center; gap: 12px; margin-top: 16px; }
+.external-player button { flex: none; min-height: 40px; padding: 0 15px; border: 1px solid var(--line); border-radius: 9px; background: white; color: var(--purple); font-size: 13px; cursor: pointer; }
+.external-player span { color: var(--muted); font-size: 11px; line-height: 1.6; }
 .media-video { --plyr-color-main: var(--purple); --plyr-font-family: inherit; overflow: hidden; border-radius: 12px; background: #171521; }
 .media-video[hidden] { display: none; }
 .media-video video { width: 100%; max-height: 72vh; }
@@ -24,6 +27,7 @@
   .media-panel h1 { font-size: 18px; }
   .media-back { padding: 8px 10px; font-size: 12px; }
   .share-start { align-items: stretch; flex-direction: column; }
+  .external-player { align-items: stretch; flex-direction: column; }
   .media-video { --plyr-control-spacing: 6px; --plyr-control-icon-size: 16px; }
   .media-video .plyr__controls .plyr__volume { min-width: 0; max-width: 64px; }
 }
