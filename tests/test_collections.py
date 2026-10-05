@@ -2,7 +2,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 _ENV = tempfile.TemporaryDirectory(prefix="nasflow-collections-env-")
 os.environ.setdefault("NASFLOW_DATA", str(Path(_ENV.name) / "data"))
@@ -85,6 +85,37 @@ class CollectionTests(unittest.TestCase):
         self.client.post(f"/api/collections/{collection_id}/start", json={"task_ids": [entries[0].id, entries[2].id]})
         self.assertEqual(self.mock_dispatch.call_count, 2)
         self.assertEqual(self.client.get("/api/collections").json()[0]["progress"], 50)
+
+    def test_start_and_resume_dispatch_scalar_ids_to_the_real_download_worker(self):
+        collection_id = self.catalog(3)
+        entries = self.entries(collection_id)
+        self.client.post(f"/api/collections/{collection_id}/start", json={"task_ids": [entries[1].id]})
+        self.client.post(f"/api/collections/{collection_id}/pause")
+        def run(task_id):
+            self.assertIsInstance(task_id, str)
+            main.run_download(task_id)
+        self.mock_dispatch.side_effect = run
+        process = MagicMock()
+        process.stdout = ["__NASFLOW_TITLE__Actual worker title"]
+        process.wait.return_value = 0
+        with patch.object(main.subprocess, "Popen", return_value=process):
+            response = self.client.post(f"/api/collections/{collection_id}/start", json={"task_ids": [entries[0].id]})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["completed"], 1)
+            resumed = self.client.post(f"/api/collections/{collection_id}/resume")
+            self.assertEqual(resumed.status_code, 200)
+            self.assertEqual(resumed.json()["completed"], 2)
+        self.assertEqual([entry.status for entry in self.entries(collection_id)], ["completed", "completed", "pending"])
+
+    def test_cancel_finds_the_running_process_by_scalar_id(self):
+        collection_id = self.catalog(2)
+        entries = self.entries(collection_id)
+        main.update_task(entries[0].id, status="running")
+        process = MagicMock()
+        with patch.dict(main.processes, {entries[0].id: process}):
+            response = self.client.post(f"/api/collections/{collection_id}/cancel")
+            self.assertEqual(response.status_code, 200)
+        process.terminate.assert_called_once()
 
     def test_pause_resume_cancel_retry_and_library_filter(self):
         collection_id = self.catalog(5)

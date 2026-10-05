@@ -440,7 +440,7 @@ def finish_running_task(task_id: str, **values: object) -> bool:
     """Keep cancellation from being overwritten by a downloader finishing."""
     with Session(engine) as session:
         changed = session.exec(update(Task).where(Task.id == task_id, Task.status == "running")
-                               .values(**values, updated_at=utcnow()).returning(Task.id)).first()
+                               .values(**values, updated_at=utcnow()).returning(Task.id)).scalars().first()
         session.commit()
         return changed is not None
 
@@ -678,7 +678,7 @@ def run_download(task_id: str) -> None:
         if not task or task.status != "queued":
             return
         claimed = session.exec(update(Task).where(Task.id == task_id, Task.status == "queued")
-                               .values(status="running", updated_at=utcnow()).returning(Task.id)).first()
+                               .values(status="running", updated_at=utcnow()).returning(Task.id)).scalars().first()
         session.commit()
         if not claimed:
             return
@@ -1018,7 +1018,7 @@ def start_collection(collection_id: str, payload: StartCollection) -> dict:
         ids = []
         for task in tasks:
             claimed = session.exec(update(Task).where(Task.id == task.id, Task.status == "pending")
-                                   .values(status="queued", updated_at=utcnow()).returning(Task.id)).first()
+                                   .values(status="queued", updated_at=utcnow()).returning(Task.id)).scalars().first()
             if claimed:
                 ids.append(claimed)
         collection.state = "active"
@@ -1063,7 +1063,7 @@ def control_collection(collection_id: str, action: Literal["pause", "resume", "c
                 if action == "retry":
                     values.update(retry_count=Task.retry_count + 1, progress=0)
                 changed = session.exec(update(Task).where(Task.id == task.id, Task.status.in_(source))
-                                       .values(**values).returning(Task.id)).first()
+                                       .values(**values).returning(Task.id)).scalars().first()
                 if changed:
                     ids.append(changed)
             collection.state = {"pause": "paused", "cancel": "cancelled"}.get(action, "active")
