@@ -809,16 +809,9 @@ def start_shared_playback(token: str, request: Request, response: Response) -> d
             existing_hash = hashlib.sha256(existing_cookie.encode("utf-8")).hexdigest()
             active_session = session.get(MediaShareSession, existing_hash)
             if active_session and active_session.share_id == share.id and active_session.expires_at > current_time:
-                external_key = secrets.token_urlsafe(32)
-                session.add(MediaShareExternalToken(
-                    token_hash=hashlib.sha256(external_key.encode("utf-8")).hexdigest(),
-                    share_id=share.id,
-                    expires_at=current_time + 8 * 60 * 60,
-                ))
-                session.commit()
                 return {"started": True, "already_counted": True,
                         "remaining_plays": max(0, share.max_plays - share.play_count),
-                        "external_key": external_key, "title": task.title,
+                        "title": task.title,
                         "source": platform_for_url(task.url), **media}
 
         reserved_id = session.exec(
@@ -833,19 +826,13 @@ def start_shared_playback(token: str, request: Request, response: Response) -> d
         new_cookie = secrets.token_urlsafe(32)
         session.add(MediaShareSession(token_hash=hashlib.sha256(new_cookie.encode("utf-8")).hexdigest(),
                                       share_id=share.id, expires_at=current_time + 8 * 60 * 60))
-        external_key = secrets.token_urlsafe(32)
-        session.add(MediaShareExternalToken(
-            token_hash=hashlib.sha256(external_key.encode("utf-8")).hexdigest(),
-            share_id=share.id,
-            expires_at=current_time + 8 * 60 * 60,
-        ))
         session.commit()
         remaining = max(0, current_share.max_plays - current_share.play_count)
     response.set_cookie(share_cookie, new_cookie, max_age=8 * 60 * 60,
                         httponly=True, secure=True, samesite="lax",
                         path=f"/nas-api/api/shares/{token}/")
     return {"started": True, "already_counted": False, "remaining_plays": remaining,
-            "external_key": external_key, "title": task.title, "source": platform_for_url(task.url), **media}
+            "title": task.title, "source": platform_for_url(task.url), **media}
 
 
 @app.api_route("/api/shares/{token}/stream", methods=["GET", "HEAD"], response_class=FileResponse)
@@ -859,19 +846,6 @@ def stream_shared_media(token: str, request: Request) -> FileResponse:
         active_session = session.get(MediaShareSession, session_hash)
         if not active_session or active_session.share_id != share.id or active_session.expires_at <= utcnow().timestamp():
             raise HTTPException(403, "播放会话已过期，请重新点击开始播放")
-    media_type = media["mime_type"] or mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-    return FileResponse(path, media_type=str(media_type), filename=path.name,
-                        content_disposition_type="inline", headers={"X-Content-Type-Options": "nosniff"})
-
-
-@app.api_route("/api/shares/{token}/external-stream", methods=["GET", "HEAD"], response_class=FileResponse)
-def stream_shared_media_externally(token: str, key: str) -> FileResponse:
-    share, _task, path, media = _share_media(token)
-    key_hash = hashlib.sha256(key.encode("utf-8")).hexdigest()
-    with Session(engine) as session:
-        external_token = session.get(MediaShareExternalToken, key_hash)
-        if not external_token or external_token.share_id != share.id or external_token.expires_at <= utcnow().timestamp():
-            raise HTTPException(403, "外部播放器授权已过期，请回到分享页重新开始播放")
     media_type = media["mime_type"] or mimetypes.guess_type(path.name)[0] or "application/octet-stream"
     return FileResponse(path, media_type=str(media_type), filename=path.name,
                         content_disposition_type="inline", headers={"X-Content-Type-Options": "nosniff"})

@@ -13,7 +13,6 @@ export default function MediaPlayer({ id, shareToken }: { id?: string; shareToke
   const [error, setError] = useState("");
   const [shareReady, setShareReady] = useState(false);
   const [startingShare, setStartingShare] = useState(false);
-  const [externalKey, setExternalKey] = useState("");
   const [isAndroid, setIsAndroid] = useState(false);
   const [resumeNotice, setResumeNotice] = useState("");
   const containerRef = useRef<HTMLDivElement>(null);
@@ -49,7 +48,6 @@ export default function MediaPlayer({ id, shareToken }: { id?: string; shareToke
       const response = await fetch(`${apiPath}/play`, { method: "POST", cache: "no-store" });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.detail || "无法开始播放此分享视频。");
-      setExternalKey(payload.external_key || "");
       setMedia((current) => current ? { ...current, ...payload } : current);
       setShareReady(true);
     } catch (cause) {
@@ -60,12 +58,9 @@ export default function MediaPlayer({ id, shareToken }: { id?: string; shareToke
   }
 
   function openInSystemPlayer() {
-    if (!isAndroid) return;
-    const streamPath = shareToken
-      ? `/nas-api/api/shares/${encodeURIComponent(shareToken)}/external-stream`
-      : `/nas-api/api/media/${encodeURIComponent(id || "")}/stream`;
+    if (!isAndroid || !id) return;
+    const streamPath = `/nas-api/api/media/${encodeURIComponent(id)}/stream`;
     const streamUrl = new URL(streamPath, window.location.origin);
-    if (shareToken && externalKey) streamUrl.searchParams.set("key", externalKey);
     const fallback = encodeURIComponent(window.location.href);
     const intent = `intent://${streamUrl.host}${streamUrl.pathname}${streamUrl.search}#Intent;scheme=${streamUrl.protocol.slice(0, -1)};action=android.intent.action.VIEW;type=video/*;S.browser_fallback_url=${fallback};end`;
     window.location.href = intent;
@@ -86,6 +81,7 @@ export default function MediaPlayer({ id, shareToken }: { id?: string; shareToke
       video.playsInline = true;
       video.preload = "metadata";
       video.setAttribute("aria-label", media.title);
+      if (shareToken) video.setAttribute("controlslist", "nodownload");
       container.replaceChildren(video);
       const player = new Plyr(video, {
         iconUrl: "/plyr.svg",
@@ -122,6 +118,8 @@ export default function MediaPlayer({ id, shareToken }: { id?: string; shareToke
       const onError = () => {
         setError(video.error?.code === 2 ? "视频读取中断，请检查网络后刷新页面重试。" : UNSUPPORTED);
       };
+      const preventShareContextMenu = (event: MouseEvent) => event.preventDefault();
+      if (shareToken) video.addEventListener("contextmenu", preventShareContextMenu);
       const onVisibility = () => { if (document.hidden) save(); };
       video.addEventListener("loadedmetadata", restore);
       video.addEventListener("durationchange", restore);
@@ -146,6 +144,7 @@ export default function MediaPlayer({ id, shareToken }: { id?: string; shareToke
         video.removeEventListener("seeked", save);
         video.removeEventListener("ended", save);
         video.removeEventListener("error", onError);
+        video.removeEventListener("contextmenu", preventShareContextMenu);
         video.pause();
         player.destroy();
         video.removeAttribute("src");
@@ -158,7 +157,9 @@ export default function MediaPlayer({ id, shareToken }: { id?: string; shareToke
     return () => { disposed = true; cleanup(); };
   }, [apiPath, id, media, shareReady, shareToken]);
 
-  const message = error || (media && !media.supported ? media.message || UNSUPPORTED : "");
+  const message = error || (media && !media.supported
+    ? shareToken ? "此视频格式暂不支持网页播放，分享链接无法播放。" : media.message || UNSUPPORTED
+    : "");
   return (
     <main className="media-page">
       <header className="media-page-header">
@@ -168,12 +169,13 @@ export default function MediaPlayer({ id, shareToken }: { id?: string; shareToke
       <section className="media-panel">
         <h1>{media?.title || "视频播放"}</h1>
         {media && <p className="media-info">{media.source} · {media.format.toUpperCase()}</p>}
+        {shareToken && <p className="media-info">此分享链接仅提供网页播放，不提供下载入口。</p>}
         {shareToken && media && <p className="share-play-count">此链接已使用 {media.play_count || 0} / {media.max_plays || 0} 次{media.remaining_plays === 0 ? " · 播放次数已用完" : ""}</p>}
         {!media && !error && <p role="status">正在读取视频信息…</p>}
-        {message && <div className="media-message" role="alert"><p>{message}</p>{media && <a href={`/nas-api/api/tasks/${encodeURIComponent(media.id)}/file`} download>下载后观看 ⇩</a>}</div>}
+        {message && <div className="media-message" role="alert"><p>{message}</p>{media && !shareToken && <a href={`/nas-api/api/tasks/${encodeURIComponent(media.id)}/file`} download>下载后观看 ⇩</a>}</div>}
         <div ref={containerRef} className="media-video" hidden={Boolean(message) || !media?.supported} />
-        {shareToken && media && !shareReady && <div className="share-start"><p>{media.remaining_plays === 0 ? "播放额度已用完；本浏览器已有会话仍可继续。" : media.supported ? "点击后开始播放，并计入一次播放。" : "此格式暂不能在网页播放；点击授权后可尝试用手机播放器打开。"}</p><button type="button" disabled={startingShare} onClick={() => void beginSharePlayback()}>{startingShare ? "正在准备…" : media.remaining_plays === 0 ? "继续播放 / 检查会话" : media.supported ? "▶ 开始播放" : "授权外部播放器"}</button></div>}
-        {isAndroid && (id || (shareToken && externalKey)) && <div className="external-player"><button type="button" onClick={openInSystemPlayer}>↗ 用系统播放器打开</button><span>若手机没有可用播放器，或浏览器未唤起应用，请下载后从文件中打开。</span></div>}
+        {shareToken && media?.supported && !shareReady && <div className="share-start"><p>{media.remaining_plays === 0 ? "播放额度已用完；本浏览器已有会话仍可继续。" : "点击后开始播放，并计入一次播放。"}</p><button type="button" disabled={startingShare} onClick={() => void beginSharePlayback()}>{startingShare ? "正在准备…" : media.remaining_plays === 0 ? "继续播放 / 检查会话" : "▶ 开始播放"}</button></div>}
+        {isAndroid && id && <div className="external-player"><button type="button" onClick={openInSystemPlayer}>↗ 用系统播放器打开</button><span>如果浏览器无法播放，可用手机播放器打开。</span></div>}
         {resumeNotice && !message && <p className="media-resume" role="status">{resumeNotice}</p>}
       </section>
     </main>
