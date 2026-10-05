@@ -24,6 +24,10 @@ async function proxy(request: Request, context: RouteContext) {
 
   const headers = new Headers(request.headers);
   headers.delete("host");
+  headers.set("x-forwarded-host", new URL(request.url).host);
+  // Cloudflare/reverse proxies terminate TLS before the web container.
+  headers.set("x-forwarded-proto", request.headers.get("x-forwarded-proto") === "https"
+    ? "https" : new URL(request.url).protocol.slice(0, -1));
   hopByHopHeaders.forEach((header) => headers.delete(header));
 
   const canHaveBody = !["GET", "HEAD"].includes(request.method);

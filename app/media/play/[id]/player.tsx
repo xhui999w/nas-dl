@@ -7,11 +7,19 @@ import "./player.css";
 
 const UNSUPPORTED = "当前视频格式暂不支持网页直接播放，可下载后使用本地播放器观看。";
 type Media = { id?: string; title: string; source: string; format: string; mime_type: string | null; supported: boolean; message: string | null; max_plays?: number; play_count?: number; remaining_plays?: number };
+type ShareQuota = { byte_limit: number; transferred_bytes: number; remaining_bytes: number };
+
+function formatBytes(bytes: number) {
+  if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(0)} KB`;
+  if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(0)} MB`;
+  return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
+}
 
 export default function MediaPlayer({ id, shareToken }: { id?: string; shareToken?: string }) {
   const [media, setMedia] = useState<Media | null>(null);
   const [error, setError] = useState("");
   const [shareReady, setShareReady] = useState(false);
+  const [shareQuota, setShareQuota] = useState<ShareQuota | null>(null);
   const [startingShare, setStartingShare] = useState(false);
   const [isAndroid, setIsAndroid] = useState(false);
   const [resumeNotice, setResumeNotice] = useState("");
@@ -31,14 +39,17 @@ export default function MediaPlayer({ id, shareToken }: { id?: string; shareToke
         const response = await fetch(apiPath, { signal: controller.signal, cache: "no-store" });
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.detail || "视频暂时无法读取，请返回媒体库重试。");
-        if (!controller.signal.aborted) setMedia(payload as Media);
+        if (!controller.signal.aborted) {
+          setMedia(payload as Media);
+          if (shareToken) setShareQuota(payload as ShareQuota);
+        }
       } catch (cause) {
         if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : "无法连接下载服务，请稍后重试。");
       }
     }
     void load();
     return () => controller.abort();
-  }, [apiPath]);
+  }, [apiPath, shareToken]);
 
   async function beginSharePlayback() {
     if (!shareToken || startingShare) return;
@@ -49,6 +60,7 @@ export default function MediaPlayer({ id, shareToken }: { id?: string; shareToke
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.detail || "无法开始播放此分享视频。");
       setMedia((current) => current ? { ...current, ...payload } : current);
+      setShareQuota(payload as ShareQuota);
       setShareReady(true);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "无法开始播放此分享视频。");
@@ -57,13 +69,35 @@ export default function MediaPlayer({ id, shareToken }: { id?: string; shareToke
     }
   }
 
-  function openInSystemPlayer() {
+  useEffect(() => {
+    if (!shareToken || !shareReady) return;
+    let active = true;
+    const refreshQuota = async () => {
+      try {
+        const response = await fetch(apiPath, { cache: "no-store" });
+        if (!response.ok) return;
+        const payload = await response.json() as ShareQuota;
+        if (active) setShareQuota(payload);
+      } catch { /* A status refresh must not interrupt video playback. */ }
+    };
+    const timer = window.setInterval(() => void refreshQuota(), 10000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [apiPath, shareReady, shareToken]);
+
+  async function openInSystemPlayer() {
     if (!isAndroid || !id) return;
-    const streamPath = `/nas-api/api/media/${encodeURIComponent(id)}/stream`;
-    const streamUrl = new URL(streamPath, window.location.origin);
-    const fallback = encodeURIComponent(window.location.href);
-    const intent = `intent://${streamUrl.host}${streamUrl.pathname}${streamUrl.search}#Intent;scheme=${streamUrl.protocol.slice(0, -1)};action=android.intent.action.VIEW;type=video/*;S.browser_fallback_url=${fallback};end`;
-    window.location.href = intent;
+    try {
+      const response = await fetch(`/nas-api/api/media/${encodeURIComponent(id)}/external-token`, { method: "POST" });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(typeof payload.detail === "string" ? payload.detail : "无法打开系统播放器。");
+      const streamUrl = new URL(`/nas-api/api/media/${encodeURIComponent(id)}/external-stream`, window.location.origin);
+      streamUrl.searchParams.set("token", payload.token);
+      const fallback = encodeURIComponent(window.location.href);
+      const intent = `intent://${streamUrl.host}${streamUrl.pathname}${streamUrl.search}#Intent;scheme=${streamUrl.protocol.slice(0, -1)};action=android.intent.action.VIEW;type=video/*;S.browser_fallback_url=${fallback};end`;
+      window.location.href = intent;
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "无法打开系统播放器。");
+    }
   }
 
   useEffect(() => {
@@ -116,6 +150,16 @@ export default function MediaPlayer({ id, shareToken }: { id?: string; shareToke
         } catch { /* Private mode/storage quotas must not interrupt playback. */ }
       };
       const onError = () => {
+        if (shareToken) {
+          void fetch(apiPath, { cache: "no-store" }).then((response) => response.ok ? response.json() : null)
+            .then((payload: ShareQuota | null) => {
+              if (payload) {
+                setShareQuota(payload);
+                setError(payload.remaining_bytes <= 0 ? "此分享链接的流量额度已用完。" : "视频读取中断，请检查网络后刷新页面重试。");
+              } else setError("视频读取中断，请检查网络后刷新页面重试。");
+            }).catch(() => setError("视频读取中断，请检查网络后刷新页面重试。"));
+          return;
+        }
         setError(video.error?.code === 2 ? "视频读取中断，请检查网络后刷新页面重试。" : UNSUPPORTED);
       };
       const preventShareContextMenu = (event: MouseEvent) => event.preventDefault();
@@ -163,18 +207,18 @@ export default function MediaPlayer({ id, shareToken }: { id?: string; shareToke
   return (
     <main className="media-page">
       <header className="media-page-header">
-        <Link className="media-brand" href="/#library" prefetch={false}>NAS<span>Flow</span></Link>
-        <Link className="media-back" href={shareToken ? "/" : "/#library"} prefetch={false}>{shareToken ? "打开 NASFlow" : "← 返回媒体库"}</Link>
+        {shareToken ? <span className="media-brand">NAS<span>Flow</span></span> : <Link className="media-brand" href="/#library" prefetch={false}>NAS<span>Flow</span></Link>}
+        {!shareToken && <Link className="media-back" href="/#library" prefetch={false}>← 返回媒体库</Link>}
       </header>
       <section className="media-panel">
         <h1>{media?.title || "视频播放"}</h1>
         {media && <p className="media-info">{media.source} · {media.format.toUpperCase()}</p>}
         {shareToken && <p className="media-info">此分享链接仅提供网页播放，不提供下载入口。</p>}
-        {shareToken && media && <p className="share-play-count">此链接已使用 {media.play_count || 0} / {media.max_plays || 0} 次{media.remaining_plays === 0 ? " · 播放次数已用完" : ""}</p>}
+        {shareToken && media && <p className="share-play-count">此链接已使用 {media.play_count || 0} / {media.max_plays || 0} 次{media.remaining_plays === 0 ? " · 播放次数已用完" : ""}{shareQuota && <> · 上传流量 {formatBytes(shareQuota.transferred_bytes)} / {formatBytes(shareQuota.byte_limit)}</>}</p>}
         {!media && !error && <p role="status">正在读取视频信息…</p>}
         {message && <div className="media-message" role="alert"><p>{message}</p>{media && media.id && !shareToken && <a href={`/nas-api/api/tasks/${encodeURIComponent(media.id)}/file`} download>下载后观看 ⇩</a>}</div>}
         <div ref={containerRef} className="media-video" hidden={Boolean(message) || !media?.supported} />
-        {shareToken && media?.supported && !shareReady && <div className="share-start"><p>{media.remaining_plays === 0 ? "播放额度已用完；本浏览器已有会话仍可继续。" : "点击后开始播放，并计入一次播放。"}</p><button type="button" disabled={startingShare} onClick={() => void beginSharePlayback()}>{startingShare ? "正在准备…" : media.remaining_plays === 0 ? "继续播放 / 检查会话" : "▶ 开始播放"}</button></div>}
+        {shareToken && media?.supported && !shareReady && <div className="share-start"><p>{shareQuota?.remaining_bytes === 0 ? "此分享链接的流量额度已用完。" : media.remaining_plays === 0 ? "播放次数已用完；本浏览器已有会话仍可继续。" : "点击后开始播放，并计入一次播放。"}</p>{shareQuota?.remaining_bytes !== 0 && <button type="button" disabled={startingShare} onClick={() => void beginSharePlayback()}>{startingShare ? "正在准备…" : media.remaining_plays === 0 ? "继续播放 / 检查会话" : "▶ 开始播放"}</button>}</div>}
         {isAndroid && id && <div className="external-player"><button type="button" onClick={openInSystemPlayer}>↗ 用系统播放器打开</button><span>如果浏览器无法播放，可用手机播放器打开。</span></div>}
         {resumeNotice && !message && <p className="media-resume" role="status">{resumeNotice}</p>}
       </section>

@@ -1,0 +1,21 @@
+.auth-page { min-height: 100dvh; display: grid; place-items: center; padding: 24px; background: #f5f5fa; }
+.auth-card { width: min(100%, 420px); padding: 36px; background: #fff; border: 1px solid #ecebf5; border-radius: 24px; box-shadow: 0 16px 50px #5046b512; }
+.auth-brand { font-size: 28px; font-weight: 800; color: #25243b; margin-bottom: 30px; }
+.auth-brand span { color: #6956e5; }
+.auth-card h1 { margin: 0 0 10px; font-size: 24px; color: #25243b; }
+.auth-card p, .account-security p { color: #888699; line-height: 1.6; font-size: 14px; }
+.auth-card form, .account-security form { display: grid; gap: 18px; margin-top: 24px; }
+.auth-card label, .account-security label { display: grid; gap: 8px; font-size: 14px; color: #454256; }
+.auth-card input, .account-security input { width: 100%; padding: 12px 14px; border: 1px solid #e5e3ef; border-radius: 12px; background: #fff; font: inherit; color: #25243b; box-sizing: border-box; }
+.auth-card input:focus, .account-security input:focus { outline: 2px solid #a99cf1; outline-offset: 2px; }
+.auth-card button, .account-security button { border: 0; border-radius: 12px; padding: 13px 18px; background: #6956e5; color: #fff; font: inherit; cursor: pointer; }
+.auth-card button:disabled, .account-security button:disabled, .logout-button:disabled { opacity: .6; cursor: wait; }
+.auth-card .auth-note { margin: 24px 0 0; font-size: 12px; }
+.auth-message { color: #c84554 !important; margin: 0; }
+.account-security { margin-top: 24px; padding: 28px; background: #fff; border: 1px solid #ecebf5; border-radius: 20px; }
+.account-security h3 { margin: 0; color: #25243b; }
+.account-security form { max-width: 460px; }
+.header-actions .logout-button { font-size: 13px; padding: 8px 12px; color: #6956e5; width: auto; height: auto; border-radius: 10px; background: #eeebff; }
+.logout-control { position: relative; }
+.logout-control span { position: absolute; right: 0; top: 36px; min-width: 180px; color: #c84554; background: #fff; padding: 8px; border-radius: 8px; font-size: 12px; }
+@media (max-width: 600px) { .auth-card { padding: 26px; } .account-security { padding: 20px; } }

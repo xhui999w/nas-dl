@@ -16,6 +16,11 @@
 - 订阅、系统设置持久化 API
 - 响应式中文 Web 控制台
 - Docker Compose 部署
+- 管理员登录保护、网页在线播放和限次数/限流量分享
+
+首次启动会生成管理员账号 `admin`，初始随机密码保存在 NAS 数据目录的
+`admin-initial-password.txt`，不会通过网页返回。登录后可在“系统设置 → 登录安全”修改。
+详见 [管理员登录说明](docs/admin-login.md) 和 [在线播放说明](docs/media-playback.md)。
 
 ## 本地开发
 

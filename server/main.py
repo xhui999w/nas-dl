@@ -11,6 +11,8 @@ import subprocess
 import sys
 import threading
 import uuid
+import time
+from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,7 +21,7 @@ from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field, computed_field, field_serializer
 from sqlalchemy import delete, inspect, update
 from sqlmodel import Field as DBField
@@ -27,6 +29,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from server.download_errors import classify_download_error
 from server.media import resolve_task_file, video_available, video_metadata, UNSUPPORTED_MESSAGE
+from server import auth
 
 DATA_DIR = Path(os.getenv("NASFLOW_DATA", "/data"))
 DOWNLOAD_DIR = Path(os.getenv("NASFLOW_DOWNLOADS", "/downloads"))
@@ -125,6 +128,8 @@ class MediaShare(SQLModel, table=True):
     token_hash: str = DBField(index=True, unique=True)
     max_plays: int
     play_count: int = 0
+    byte_limit: int = 0
+    transferred_bytes: int = 0
     revoked: bool = False
     created_at: datetime = DBField(default_factory=utcnow)
 
@@ -193,7 +198,7 @@ class DownloadEntriesPayload(BaseModel):
     urls: list[str] = Field(min_length=1, max_length=200)
 
 
-app = FastAPI(title="NASFlow API", version="0.2.0")
+app = FastAPI(title="NASFlow API", version="0.2.0", docs_url=None, redoc_url=None, openapi_url=None)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=os.getenv("NASFLOW_CORS", "*").split(","),
@@ -201,6 +206,104 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+login_attempts: dict[str, deque[float]] = defaultdict(deque)
+login_lock = threading.Lock()
+PUBLIC_SHARE_PATH = re.compile(r"/api/shares/[A-Za-z0-9_-]{1,128}(?:/(play|stream))?")
+
+
+def public_api_request(path: str, method: str) -> bool:
+    if path == "/api/health" and method in {"GET", "HEAD"}:
+        return True
+    if path == "/api/auth/login" and method == "POST":
+        return True
+    if re.fullmatch(r"/api/media/[a-f0-9]{32}/external-stream", path) and method in {"GET", "HEAD"}:
+        return True  # The endpoint validates a separate, expiring owner token.
+    match = PUBLIC_SHARE_PATH.fullmatch(path)
+    if not match:
+        return False
+    action = match.group(1)
+    return (action is None and method == "GET" or action == "play" and method == "POST"
+            or action == "stream" and method in {"GET", "HEAD"})
+
+
+@app.middleware("http")
+async def protect_management(request: Request, call_next):
+    if request.method not in {"GET", "HEAD", "OPTIONS"}:
+        origin = request.headers.get("origin")
+        expected_host = request.headers.get("x-forwarded-host", request.headers.get("host", ""))
+        expected_scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
+        if origin and origin != f"{expected_scheme}://{expected_host}":
+            return JSONResponse({"detail": "请求来源不匹配，请在 NASFlow 页面操作"}, status_code=403)
+    if not public_api_request(request.url.path, request.method):
+        username = auth.session_username(engine, request.cookies.get(auth.COOKIE_NAME))
+        if not username:
+            return JSONResponse({"detail": "请先登录管理员账号"}, status_code=401,
+                                headers={"Cache-Control": "no-store"})
+        request.state.admin_username = username
+    response = await call_next(request)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+class LoginPayload(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=128)
+
+
+class ChangeCredentialsPayload(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=8, max_length=128)
+
+
+def limit_login_attempts(request: Request) -> None:
+    client = request.client.host if request.client else "unknown"
+    now = time.monotonic()
+    with login_lock:
+        attempts = login_attempts[client]
+        while attempts and attempts[0] < now - 300:
+            attempts.popleft()
+        if len(attempts) >= 10:
+            raise HTTPException(429, "尝试次数过多，请 5 分钟后重试")
+        attempts.append(now)
+
+
+@app.post("/api/auth/login")
+def admin_login(payload: LoginPayload, request: Request, response: Response) -> dict[str, str]:
+    limit_login_attempts(request)
+    username = auth.verify_login(engine, payload.username, payload.password)
+    if not username:
+        raise HTTPException(401, "账号或密码不正确")
+    token = auth.create_session(engine)
+    secure = request.headers.get("x-forwarded-proto", request.url.scheme) == "https"
+    response.set_cookie(auth.COOKIE_NAME, token, max_age=auth.SESSION_SECONDS, httponly=True,
+                        secure=secure, samesite="lax", path="/")
+    return {"username": username}
+
+
+@app.get("/api/auth/session")
+def admin_session(request: Request) -> dict[str, str]:
+    return {"username": request.state.admin_username}
+
+
+@app.post("/api/auth/logout")
+def admin_logout(request: Request, response: Response) -> dict[str, bool]:
+    auth.logout(engine, request.cookies.get(auth.COOKIE_NAME, ""))
+    response.delete_cookie(auth.COOKIE_NAME, path="/")
+    return {"logged_out": True}
+
+
+@app.post("/api/auth/credentials")
+def update_admin_credentials(payload: ChangeCredentialsPayload, request: Request, response: Response) -> dict[str, bool]:
+    limit_login_attempts(request)
+    username = payload.username.strip()
+    if not username:
+        raise HTTPException(422, "账号不能为空")
+    if not auth.change_credentials(engine, DATA_DIR, username, payload.current_password, payload.new_password):
+        raise HTTPException(401, "当前密码不正确")
+    response.delete_cookie(auth.COOKIE_NAME, path="/")
+    return {"updated": True, "login_required": True}
 
 
 def valid_url(value: str) -> bool:
@@ -599,6 +702,7 @@ def dispatch(task_id: str) -> None:
 
 def migrate_schema() -> None:
     columns = {column["name"] for column in inspect(engine).get_columns("task")}
+    share_columns = {column["name"] for column in inspect(engine).get_columns("mediashare")}
     additions = {
         "quality": "TEXT NOT NULL DEFAULT 'best'",
         "folder": "TEXT NOT NULL DEFAULT '自动分类'",
@@ -614,12 +718,20 @@ def migrate_schema() -> None:
         for name, definition in additions.items():
             if name not in columns:
                 connection.exec_driver_sql(f"ALTER TABLE task ADD COLUMN {name} {definition}")
+        share_additions = {
+            "byte_limit": "INTEGER NOT NULL DEFAULT 0",
+            "transferred_bytes": "INTEGER NOT NULL DEFAULT 0",
+        }
+        for name, definition in share_additions.items():
+            if name not in share_columns:
+                connection.exec_driver_sql(f"ALTER TABLE mediashare ADD COLUMN {name} {definition}")
 
 
 @app.on_event("startup")
 def on_startup() -> None:
     SQLModel.metadata.create_all(engine)
     migrate_schema()
+    auth.initialize_admin(engine, DATA_DIR)
     backfill_task_titles()
     with Session(engine) as session:
         interrupted = session.exec(select(Task).where(Task.status.in_(["running", "queued"]))).all()
@@ -721,15 +833,44 @@ def get_media(task_id: str) -> dict[str, object]:
 @app.api_route("/api/media/{task_id}/stream", methods=["GET", "HEAD"], response_class=FileResponse)
 def stream_media(task_id: str) -> FileResponse:
     task = get_task(task_id)
+    path = resolve_task_file(task.status, task.output_path, DOWNLOAD_DIR)
     if not video_available(task.status, task.output_path, DOWNLOAD_DIR):
         raise HTTPException(415, UNSUPPORTED_MESSAGE)
-    path = resolve_task_file(task.status, task.output_path, DOWNLOAD_DIR)
     media = video_metadata(path)
+    if not media["supported"]:
+        raise HTTPException(415, UNSUPPORTED_MESSAGE)
     # Starlette FileResponse reads bounded chunks and implements Range/If-Range,
     # 206 Content-Range, 416 for unsatisfiable ranges, and bodyless HEAD responses.
     media_type = media["mime_type"] or mimetypes.guess_type(path.name)[0] or "application/octet-stream"
     return FileResponse(path, media_type=str(media_type), filename=path.name,
                         content_disposition_type="inline", headers={"X-Content-Type-Options": "nosniff"})
+
+
+@app.post("/api/media/{task_id}/external-token")
+def create_owner_media_token(task_id: str, request: Request) -> dict[str, str]:
+    metadata = get_media(task_id)
+    if not metadata["supported"]:
+        raise HTTPException(415, UNSUPPORTED_MESSAGE)
+    token = secrets.token_urlsafe(32)
+    with Session(engine) as session:
+        session.exec(delete(auth.OwnerMediaToken).where(auth.OwnerMediaToken.expires_at <= time.time()))
+        session.add(auth.OwnerMediaToken(token_hash=auth.token_hash(token), task_id=task_id,
+                                        admin_session_hash=auth.token_hash(request.cookies[auth.COOKIE_NAME]),
+                                        expires_at=time.time() + 8 * 60 * 60))
+        session.commit()
+    return {"token": token}
+
+
+@app.api_route("/api/media/{task_id}/external-stream", methods=["GET", "HEAD"], response_class=FileResponse)
+def stream_owner_external_media(task_id: str, token: str = "") -> FileResponse:
+    if not token or len(token) > 128:
+        raise HTTPException(403, "播放器授权已失效")
+    with Session(engine) as session:
+        saved = session.get(auth.OwnerMediaToken, auth.token_hash(token))
+        admin = session.get(auth.AdminSession, saved.admin_session_hash) if saved else None
+        if not saved or saved.task_id != task_id or saved.expires_at <= time.time() or not admin or admin.expires_at <= time.time():
+            raise HTTPException(403, "播放器授权已失效")
+    return stream_media(task_id)
 
 
 def _share_by_token(token: str) -> MediaShare:
@@ -746,16 +887,111 @@ def _share_media(token: str) -> tuple[MediaShare, Task, Path, dict[str, object]]
     task = get_task(share.task_id)
     path = resolve_task_file(task.status, task.output_path, DOWNLOAD_DIR)
     media = video_metadata(path)
+    _ensure_share_quota(share, path)
     return share, task, path, media
+
+
+def _ensure_share_quota(share: MediaShare, path: Path) -> None:
+    if share.byte_limit > 0:
+        return
+    byte_limit = max(1, int(path.stat().st_size * share.max_plays * 1.2))
+    with Session(engine) as session:
+        session.exec(update(MediaShare).where(MediaShare.id == share.id, MediaShare.byte_limit == 0)
+                     .values(byte_limit=byte_limit))
+        session.commit()
+        current = session.get(MediaShare, share.id)
+        if current:
+            share.byte_limit = current.byte_limit
+            share.transferred_bytes = current.transferred_bytes
+
+
+def _share_quota_fields(share: MediaShare) -> dict[str, int]:
+    return {
+        "byte_limit": share.byte_limit,
+        "transferred_bytes": share.transferred_bytes,
+        "remaining_bytes": max(0, share.byte_limit - share.transferred_bytes),
+    }
+
+
+def _reserve_share_bytes(share_id: str, amount: int) -> int:
+    if amount <= 0:
+        return 0
+    for _ in range(3):
+        with Session(engine) as session:
+            share = session.get(MediaShare, share_id)
+            if not share or share.revoked:
+                return 0
+            available = max(0, share.byte_limit - share.transferred_bytes)
+            if available == 0:
+                return 0
+            reserved_bytes = min(amount, available)
+            reserved = session.exec(
+                update(MediaShare)
+                .where(MediaShare.id == share_id, MediaShare.revoked == False,
+                       MediaShare.transferred_bytes + reserved_bytes <= MediaShare.byte_limit)
+                .values(transferred_bytes=MediaShare.transferred_bytes + reserved_bytes)
+                .returning(MediaShare.id)
+            ).first()
+            session.commit()
+            if reserved:
+                return reserved_bytes
+    return 0
+
+
+class ShareQuotaFileResponse(FileResponse):
+    def __init__(self, *args: object, share_id: str, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)
+        self.share_id = share_id
+        self.chunk_size = 256 * 1024
+
+    async def __call__(self, scope: dict[str, object], receive: object, send: object) -> None:
+        closed = False
+        count_body = False
+
+        async def quota_send(message: dict[str, object]) -> None:
+            nonlocal closed, count_body
+            if message.get("type") == "http.response.start":
+                count_body = scope.get("method") != "HEAD" and message.get("status") in (200, 206)
+                if count_body:
+                    # The final body may be cut short at the exact quota boundary.
+                    # Without Content-Length, the server can close it cleanly instead
+                    # of reporting a mismatched fixed-length response.
+                    headers = message.get("headers", [])
+                    message = {**message, "headers": [(key, value) for key, value in headers
+                                                        if key.lower() != b"content-length"]}
+            if message.get("type") == "http.response.body":
+                if closed:
+                    return
+                body = message.get("body", b"")
+                if count_body and isinstance(body, bytes) and body:
+                    reserved = _reserve_share_bytes(self.share_id, len(body))
+                    if reserved < len(body):
+                        closed = True
+                        await send({**message, "body": body[:reserved], "more_body": False})  # type: ignore[operator]
+                        return
+            await send(message)  # type: ignore[operator]
+
+        # Disable ASGI's zero-copy path-send extension so every video chunk
+        # passes through quota_send, including under servers that support sendfile.
+        quota_scope = dict(scope)
+        extensions = dict(scope.get("extensions", {}))  # type: ignore[arg-type]
+        extensions.pop("http.response.pathsend", None)
+        quota_scope["extensions"] = extensions
+        await super().__call__(quota_scope, receive, quota_send)  # type: ignore[arg-type]
 
 
 @app.get("/api/tasks/{task_id}/shares")
 def list_media_shares(task_id: str) -> list[dict[str, object]]:
-    get_task(task_id)
+    task = get_task(task_id)
     with Session(engine) as session:
         shares = session.exec(select(MediaShare).where(MediaShare.task_id == task_id).order_by(MediaShare.created_at.desc())).all()
+    if shares and video_available(task.status, task.output_path, DOWNLOAD_DIR):
+        path = resolve_task_file(task.status, task.output_path, DOWNLOAD_DIR)
+        for item in shares:
+            _ensure_share_quota(item, path)
     return [{"id": item.id, "max_plays": item.max_plays, "play_count": item.play_count,
-             "revoked": item.revoked, "created_at": item.created_at.isoformat()} for item in shares]
+             "revoked": item.revoked, **_share_quota_fields(item),
+             "created_at": item.created_at.isoformat()} for item in shares]
 
 
 @app.post("/api/tasks/{task_id}/shares", status_code=201)
@@ -765,13 +1001,15 @@ def create_media_share(task_id: str, payload: CreateMediaShare) -> dict[str, obj
         raise HTTPException(415, UNSUPPORTED_MESSAGE)
     path = resolve_task_file(task.status, task.output_path, DOWNLOAD_DIR)
     token = secrets.token_urlsafe(32)
-    share = MediaShare(task_id=task_id, token_hash=hashlib.sha256(token.encode("utf-8")).hexdigest(), max_plays=payload.plays)
+    byte_limit = max(1, int(path.stat().st_size * payload.plays * 1.2))
+    share = MediaShare(task_id=task_id, token_hash=hashlib.sha256(token.encode("utf-8")).hexdigest(),
+                       max_plays=payload.plays, byte_limit=byte_limit)
     with Session(engine) as session:
         session.add(share)
         session.commit()
         session.refresh(share)
     return {"id": share.id, "token": token, "max_plays": share.max_plays, "play_count": 0,
-            "revoked": False, "created_at": share.created_at.isoformat()}
+            "revoked": False, **_share_quota_fields(share), "created_at": share.created_at.isoformat()}
 
 
 @app.delete("/api/shares/{share_id}")
@@ -793,12 +1031,16 @@ def get_shared_media(token: str) -> dict[str, object]:
     share, task, _path, media = _share_media(token)
     return {"title": task.title, "source": platform_for_url(task.url), **media,
             "max_plays": share.max_plays, "play_count": share.play_count,
-            "remaining_plays": max(0, share.max_plays - share.play_count)}
+            "remaining_plays": max(0, share.max_plays - share.play_count), **_share_quota_fields(share)}
 
 
 @app.post("/api/shares/{token}/play")
 def start_shared_playback(token: str, request: Request, response: Response) -> dict[str, object]:
     share, task, _path, media = _share_media(token)
+    if not media["supported"]:
+        raise HTTPException(415, UNSUPPORTED_MESSAGE)
+    if share.transferred_bytes >= share.byte_limit:
+        raise HTTPException(410, "此分享链接的流量额度已用完")
     share_cookie = f"nasflow_share_{token[:12]}"
     existing_cookie = request.cookies.get(share_cookie)
     current_time = utcnow().timestamp()
@@ -811,7 +1053,7 @@ def start_shared_playback(token: str, request: Request, response: Response) -> d
             if active_session and active_session.share_id == share.id and active_session.expires_at > current_time:
                 return {"started": True, "already_counted": True,
                         "remaining_plays": max(0, share.max_plays - share.play_count),
-                        "title": task.title,
+                        "title": task.title, **_share_quota_fields(share),
                         "source": platform_for_url(task.url), **media}
 
         reserved_id = session.exec(
@@ -828,16 +1070,19 @@ def start_shared_playback(token: str, request: Request, response: Response) -> d
                                       share_id=share.id, expires_at=current_time + 8 * 60 * 60))
         session.commit()
         remaining = max(0, current_share.max_plays - current_share.play_count)
+        quota = _share_quota_fields(current_share)
     response.set_cookie(share_cookie, new_cookie, max_age=8 * 60 * 60,
                         httponly=True, secure=True, samesite="lax",
                         path=f"/nas-api/api/shares/{token}/")
     return {"started": True, "already_counted": False, "remaining_plays": remaining,
-            "title": task.title, "source": platform_for_url(task.url), **media}
+            "title": task.title, "source": platform_for_url(task.url), **quota, **media}
 
 
 @app.api_route("/api/shares/{token}/stream", methods=["GET", "HEAD"], response_class=FileResponse)
 def stream_shared_media(token: str, request: Request) -> FileResponse:
     share, task, path, media = _share_media(token)
+    if not media["supported"]:
+        raise HTTPException(415, UNSUPPORTED_MESSAGE)
     session_cookie = request.cookies.get(f"nasflow_share_{token[:12]}")
     if not session_cookie:
         raise HTTPException(403, "请先点击开始播放")
@@ -846,9 +1091,12 @@ def stream_shared_media(token: str, request: Request) -> FileResponse:
         active_session = session.get(MediaShareSession, session_hash)
         if not active_session or active_session.share_id != share.id or active_session.expires_at <= utcnow().timestamp():
             raise HTTPException(403, "播放会话已过期，请重新点击开始播放")
+        current_share = session.get(MediaShare, share.id)
+        if not current_share or current_share.transferred_bytes >= current_share.byte_limit:
+            raise HTTPException(410, "此分享链接的流量额度已用完")
     media_type = media["mime_type"] or mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-    return FileResponse(path, media_type=str(media_type), filename=path.name,
-                        content_disposition_type="inline", headers={"X-Content-Type-Options": "nosniff"})
+    return ShareQuotaFileResponse(path, share_id=share.id, media_type=str(media_type), filename=path.name,
+                                  content_disposition_type="inline", headers={"X-Content-Type-Options": "nosniff"})
 
 
 @app.post("/api/tasks", response_model=TaskView, status_code=201)
