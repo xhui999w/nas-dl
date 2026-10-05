@@ -21,6 +21,8 @@ type Task = {
   mediaAvailable?: boolean;
 };
 
+type MediaShare = { id: string; max_plays: number; play_count: number; revoked: boolean; created_at: string; token?: string };
+
 const demoTasks: Task[] = [
   { id: 101, title: "东京雨夜散步 · 4K", source: "YouTube", status: "下载中", progress: 72, meta: "18.4 MB/s · 剩余 1分12秒", tone: "violet", backendStatus: "running" },
   { id: 102, title: "夏日岛屿摄影集", source: "Instagram", status: "下载中", progress: 38, meta: "12 / 31 张 · 原图", tone: "orange", backendStatus: "running" },
@@ -208,6 +210,12 @@ export default function Home() {
   const [activeNav, setActiveNav] = useState("overview");
   const [menuOpen, setMenuOpen] = useState(false);
   const [subscriptionOpen, setSubscriptionOpen] = useState(false);
+  const [shareTask, setShareTask] = useState<Task | null>(null);
+  const [sharePlays, setSharePlays] = useState(1);
+  const [shareItems, setShareItems] = useState<MediaShare[]>([]);
+  const [newShareUrl, setNewShareUrl] = useState("");
+  const [shareBusy, setShareBusy] = useState(false);
+  const [shareMessage, setShareMessage] = useState("");
   const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
   const [subscriptionName, setSubscriptionName] = useState("");
   const [subscriptionUrl, setSubscriptionUrl] = useState("");
@@ -669,6 +677,62 @@ export default function Home() {
     }
   }
 
+  async function openShareManager(task: Task) {
+    if (typeof task.id !== "string") return;
+    setShareTask(task);
+    setShareItems([]);
+    setNewShareUrl("");
+    setShareMessage("");
+    try {
+      const response = await fetch(`${API_BASE}/api/tasks/${encodeURIComponent(task.id)}/shares`, { cache: "no-store" });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.detail || "读取分享链接失败");
+      setShareItems(payload as MediaShare[]);
+    } catch (cause) {
+      setShareMessage(cause instanceof Error ? cause.message : "读取分享链接失败");
+    }
+  }
+
+  async function createShareLink() {
+    if (!shareTask || typeof shareTask.id !== "string") return;
+    setShareBusy(true);
+    setShareMessage("");
+    try {
+      const response = await fetch(`${API_BASE}/api/tasks/${encodeURIComponent(shareTask.id)}/shares`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ plays: sharePlays }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.detail || "创建分享链接失败");
+      setNewShareUrl(`${window.location.origin}/media/share/${encodeURIComponent(payload.token)}`);
+      setShareItems((items) => [payload as MediaShare, ...items]);
+    } catch (cause) {
+      setShareMessage(cause instanceof Error ? cause.message : "创建分享链接失败");
+    } finally {
+      setShareBusy(false);
+    }
+  }
+
+  async function copyShareLink() {
+    if (!newShareUrl) return;
+    try {
+      await navigator.clipboard.writeText(newShareUrl);
+      setShareMessage("链接已复制，可以发给对方了。");
+    } catch {
+      setShareMessage("复制失败，请手动选择并复制上方链接。");
+    }
+  }
+
+  async function revokeShare(item: MediaShare) {
+    try {
+      const response = await fetch(`${API_BASE}/api/shares/${encodeURIComponent(item.id)}`, { method: "DELETE" });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.detail || "撤销分享链接失败");
+      setShareItems((items) => items.map((candidate) => candidate.id === item.id ? { ...candidate, revoked: true } : candidate));
+    } catch (cause) {
+      setShareMessage(cause instanceof Error ? cause.message : "撤销分享链接失败");
+    }
+  }
+
   return (
     <main>
       {menuOpen && <button className="menu-backdrop" aria-label="关闭导航" onClick={() => setMenuOpen(false)} />}
@@ -756,6 +820,7 @@ export default function Home() {
                   <time className={`history-status ${task.backendStatus || ""}`}>{task.status}</time>
                   <div className="history-actions">
                     {task.status === "已完成" && task.mediaAvailable && typeof task.id === "string" && <Link className="media-play" href={`/media/play/${encodeURIComponent(task.id)}`} prefetch={false} aria-label={`播放 ${task.title}`} title="播放"><span aria-hidden="true">▶</span></Link>}
+                    {task.status === "已完成" && task.mediaAvailable && typeof task.id === "string" && <button type="button" className="media-share" onClick={() => void openShareManager(task)} aria-label={`分享 ${task.title}`} title="分享播放链接">↗</button>}
                     {task.status === "已完成" && typeof task.id === "string" && <a className="device-download" href={taskFileUrl(task)} download onClick={(event) => saveTaskToDevice(event, task)} aria-label={`保存 ${task.title} 到当前设备`} title="保存到此设备"><span aria-hidden="true">⇩</span></a>}
                     {(task.status === "失败" || task.status === "已取消") && <button onClick={() => retryTask(task)} aria-label={`重试 ${task.title}`}>↻</button>}
                     <button className="delete-button" onClick={() => deleteTask(task)} aria-label={`删除 ${task.title}`}>×</button>
@@ -863,6 +928,25 @@ export default function Home() {
 
         <footer><p><i /> NASFlow 服务运行中 · 已连续运行 12 天 8 小时</p><div><span>yt-dlp <b>最新版</b></span><span>gallery-dl <b>最新版</b></span><a href="#help">需要帮助？</a></div></footer>
       </section>
+      {shareTask && <div className="subscription-modal share-modal">
+        <button className="subscription-backdrop" onClick={() => setShareTask(null)} aria-label="关闭分享管理" />
+        <section className="subscription-drawer share-drawer" role="dialog" aria-modal="true" aria-labelledby="share-title">
+          <div className="subscription-heading"><div><span>分享播放</span><h2 id="share-title">{shareTask.title}</h2><p>设置最多可播放次数，随时可以撤销链接。</p></div><button onClick={() => setShareTask(null)} aria-label="关闭">×</button></div>
+          <div className="share-create">
+            <label>最多播放次数
+              <input type="number" min={1} max={1000} value={sharePlays} onChange={(event) => setSharePlays(Math.max(1, Math.min(1000, Number(event.target.value) || 1)))} />
+            </label>
+            <small>每个新浏览器播放会占用 1 次；同一浏览器 8 小时内续播和拖动进度不重复计数。</small>
+            <button type="button" disabled={shareBusy} onClick={() => void createShareLink()}>{shareBusy ? "正在创建…" : "创建分享链接"}</button>
+          </div>
+          {newShareUrl && <div className="share-created"><label htmlFor="share-link">新链接（仅在创建时显示，请复制保存）</label><input id="share-link" readOnly value={newShareUrl} onFocus={(event) => event.currentTarget.select()} /><button type="button" onClick={() => void copyShareLink()}>复制链接</button></div>}
+          {shareMessage && <p className="share-message" role="status">{shareMessage}</p>}
+          <div className="share-list"><h3>链接记录</h3>
+            {!shareItems.length && <p className="share-empty">还没有创建过分享链接。</p>}
+            {shareItems.map((item) => <article key={item.id}><div><strong>{item.revoked ? "已撤销" : item.play_count >= item.max_plays ? "次数已用完" : "可播放"}</strong><small>{item.play_count} / {item.max_plays} 次 · {new Date(item.created_at).toLocaleString("zh-CN")}</small></div>{!item.revoked && item.play_count < item.max_plays && <button type="button" onClick={() => void revokeShare(item)}>撤销</button>}</article>)}
+          </div>
+        </section>
+      </div>}
     </main>
   );
 }

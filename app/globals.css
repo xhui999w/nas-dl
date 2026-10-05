@@ -174,6 +174,7 @@ header p { margin: 0; color: var(--muted); font-size: 12px; }
 .task-row-actions .device-download, .history-actions .device-download { width: 27px; min-width: 27px; height: 27px; padding: 0; background: #e9f9f1; color: #249965; font-size: 16px; font-weight: 800; line-height: 1; text-decoration: none; }
 .history-actions button.delete-button { color: #cf4a4a; background: #fff0f0; }
 .history-actions .media-play { width: 27px; height: 27px; font-size: 12px; text-decoration: none; }
+.history-actions .media-share { width: 27px; height: 27px; font-size: 15px; }
 .history-actions .media-play:focus-visible { outline: 2px solid var(--purple); outline-offset: 2px; }
 
 .automation-strip { display: flex; align-items: center; gap: 20px; margin-top: 16px; padding: 17px 20px; border: 1px solid var(--line); border-radius: 15px; background: white; }
@@ -187,6 +188,25 @@ header p { margin: 0; color: var(--muted); font-size: 12px; }
 .subscription-automation { margin: 0 0 18px; }
 
 .subscription-modal { position: fixed; z-index: 50; inset: 0; }
+.share-modal { z-index: 60; }
+.share-drawer { width: min(500px, 100%); }
+.share-create { display: grid; gap: 10px; margin: 24px 0; padding: 18px; border: 1px solid var(--line); border-radius: 14px; background: #faf9ff; }
+.share-create label { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 12px; font-weight: 700; }
+.share-create input { width: 100px; height: 38px; padding: 0 10px; border: 1px solid #e2e0e8; border-radius: 8px; font: inherit; }
+.share-create small { color: var(--muted); font-size: 10px; line-height: 1.7; }
+.share-create > button, .share-created > button { min-height: 38px; padding: 0 14px; border: 0; border-radius: 9px; background: var(--purple); color: white; font-size: 11px; cursor: pointer; }
+.share-create > button:disabled { opacity: .6; cursor: wait; }
+.share-created { display: grid; gap: 9px; margin: 18px 0; }
+.share-created label, .share-list h3 { color: var(--ink); font-size: 12px; font-weight: 700; }
+.share-created input { width: 100%; height: 38px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; color: #625e70; font-size: 10px; }
+.share-message, .share-empty { color: var(--muted); font-size: 11px; line-height: 1.6; }
+.share-list { margin-top: 24px; }
+.share-list h3 { margin: 0 0 10px; }
+.share-list article { display: flex; justify-content: space-between; align-items: center; gap: 14px; padding: 13px 0; border-top: 1px solid var(--line); }
+.share-list article strong, .share-list article small { display: block; }
+.share-list article strong { font-size: 11px; }
+.share-list article small { margin-top: 5px; color: var(--muted); font-size: 9px; }
+.share-list article button { flex: none; padding: 7px 10px; border: 0; border-radius: 7px; background: #fff0f0; color: #c94b4b; font-size: 10px; cursor: pointer; }
 .subscription-backdrop { position: absolute; inset: 0; width: 100%; border: 0; background: rgba(24, 22, 42, .4); backdrop-filter: blur(4px); }
 .subscription-drawer { position: absolute; top: 0; right: 0; width: min(520px, 100%); height: 100%; overflow-y: auto; padding: 30px; background: #fff; box-shadow: -24px 0 60px rgba(28, 25, 55, .18); animation: drawer-in .22s ease-out; }
 .subscription-dashboard { width: min(900px, 100%); background: #f7f8fc; }

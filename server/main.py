@@ -4,6 +4,7 @@ import json
 import hashlib
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -15,11 +16,11 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, computed_field, field_serializer
-from sqlalchemy import inspect
+from sqlalchemy import delete, inspect, update
 from sqlmodel import Field as DBField
 from sqlmodel import Session, SQLModel, create_engine, select
 
@@ -115,6 +116,26 @@ class Setting(SQLModel, table=True):
     key: str = DBField(primary_key=True)
     value: str
     updated_at: datetime = DBField(default_factory=utcnow)
+
+
+class MediaShare(SQLModel, table=True):
+    id: str = DBField(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    task_id: str = DBField(index=True)
+    token_hash: str = DBField(index=True, unique=True)
+    max_plays: int
+    play_count: int = 0
+    revoked: bool = False
+    created_at: datetime = DBField(default_factory=utcnow)
+
+
+class MediaShareSession(SQLModel, table=True):
+    token_hash: str = DBField(primary_key=True)
+    share_id: str = DBField(index=True)
+    expires_at: float
+
+
+class CreateMediaShare(BaseModel):
+    plays: int = Field(ge=1, le=1000)
 
 
 class CreateTask(BaseModel):
@@ -699,6 +720,126 @@ def stream_media(task_id: str) -> FileResponse:
         raise HTTPException(415, UNSUPPORTED_MESSAGE)
     # Starlette FileResponse reads bounded chunks and implements Range/If-Range,
     # 206 Content-Range, 416 for unsatisfiable ranges, and bodyless HEAD responses.
+    return FileResponse(path, media_type=str(media["mime_type"]), filename=path.name,
+                        content_disposition_type="inline", headers={"X-Content-Type-Options": "nosniff"})
+
+
+def _share_by_token(token: str) -> MediaShare:
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    with Session(engine) as session:
+        share = session.exec(select(MediaShare).where(MediaShare.token_hash == token_hash)).first()
+        if not share or share.revoked:
+            raise HTTPException(404, "分享链接已失效或不存在")
+        return share
+
+
+def _share_media(token: str) -> tuple[MediaShare, Task, Path, dict[str, object]]:
+    share = _share_by_token(token)
+    task = get_task(share.task_id)
+    path = resolve_task_file(task.status, task.output_path, DOWNLOAD_DIR)
+    media = video_metadata(path)
+    if not media["supported"]:
+        raise HTTPException(415, UNSUPPORTED_MESSAGE)
+    return share, task, path, media
+
+
+@app.get("/api/tasks/{task_id}/shares")
+def list_media_shares(task_id: str) -> list[dict[str, object]]:
+    get_task(task_id)
+    with Session(engine) as session:
+        shares = session.exec(select(MediaShare).where(MediaShare.task_id == task_id).order_by(MediaShare.created_at.desc())).all()
+    return [{"id": item.id, "max_plays": item.max_plays, "play_count": item.play_count,
+             "revoked": item.revoked, "created_at": item.created_at.isoformat()} for item in shares]
+
+
+@app.post("/api/tasks/{task_id}/shares", status_code=201)
+def create_media_share(task_id: str, payload: CreateMediaShare) -> dict[str, object]:
+    task = get_task(task_id)
+    if not video_available(task.status, task.output_path, DOWNLOAD_DIR):
+        raise HTTPException(415, UNSUPPORTED_MESSAGE)
+    path = resolve_task_file(task.status, task.output_path, DOWNLOAD_DIR)
+    media = video_metadata(path)
+    if not media["supported"]:
+        raise HTTPException(415, UNSUPPORTED_MESSAGE)
+    token = secrets.token_urlsafe(32)
+    share = MediaShare(task_id=task_id, token_hash=hashlib.sha256(token.encode("utf-8")).hexdigest(), max_plays=payload.plays)
+    with Session(engine) as session:
+        session.add(share)
+        session.commit()
+        session.refresh(share)
+    return {"id": share.id, "token": token, "max_plays": share.max_plays, "play_count": 0,
+            "revoked": False, "created_at": share.created_at.isoformat()}
+
+
+@app.delete("/api/shares/{share_id}")
+def revoke_media_share(share_id: str) -> dict[str, bool]:
+    with Session(engine) as session:
+        share = session.get(MediaShare, share_id)
+        if not share:
+            raise HTTPException(404, "分享链接不存在")
+        share.revoked = True
+        session.add(share)
+        session.exec(delete(MediaShareSession).where(MediaShareSession.share_id == share_id))
+        session.commit()
+    return {"revoked": True}
+
+
+@app.get("/api/shares/{token}")
+def get_shared_media(token: str) -> dict[str, object]:
+    share, task, _path, media = _share_media(token)
+    return {"id": task.id, "title": task.title, "source": platform_for_url(task.url), **media,
+            "max_plays": share.max_plays, "play_count": share.play_count,
+            "remaining_plays": max(0, share.max_plays - share.play_count)}
+
+
+@app.post("/api/shares/{token}/play")
+def start_shared_playback(token: str, request: Request, response: Response) -> dict[str, object]:
+    share, task, _path, media = _share_media(token)
+    share_cookie = f"nasflow_share_{token[:12]}"
+    existing_cookie = request.cookies.get(share_cookie)
+    current_time = utcnow().timestamp()
+    with Session(engine) as session:
+        session.exec(delete(MediaShareSession).where(MediaShareSession.expires_at <= current_time))
+        if existing_cookie:
+            existing_hash = hashlib.sha256(existing_cookie.encode("utf-8")).hexdigest()
+            active_session = session.get(MediaShareSession, existing_hash)
+            if active_session and active_session.share_id == share.id and active_session.expires_at > current_time:
+                return {"started": True, "already_counted": True,
+                        "remaining_plays": max(0, share.max_plays - share.play_count),
+                        "title": task.title, "source": platform_for_url(task.url), **media}
+
+        reserved_id = session.exec(
+            update(MediaShare)
+            .where(MediaShare.id == share.id, MediaShare.revoked == False, MediaShare.play_count < MediaShare.max_plays)
+            .values(play_count=MediaShare.play_count + 1)
+            .returning(MediaShare.id)
+        ).first()
+        if not reserved_id:
+            raise HTTPException(410, "此分享链接的播放次数已经用完")
+        current_share = session.get(MediaShare, share.id)
+        new_cookie = secrets.token_urlsafe(32)
+        session.add(MediaShareSession(token_hash=hashlib.sha256(new_cookie.encode("utf-8")).hexdigest(),
+                                      share_id=share.id, expires_at=current_time + 8 * 60 * 60))
+        session.commit()
+        remaining = max(0, current_share.max_plays - current_share.play_count)
+    response.set_cookie(share_cookie, new_cookie, max_age=8 * 60 * 60,
+                        httponly=True, secure=True, samesite="lax",
+                        path=f"/nas-api/api/shares/{token}/")
+    return {"started": True, "already_counted": False, "remaining_plays": remaining,
+            "title": task.title, "source": platform_for_url(task.url), **media}
+
+
+@app.api_route("/api/shares/{token}/stream", methods=["GET", "HEAD"], response_class=FileResponse)
+def stream_shared_media(token: str, request: Request) -> FileResponse:
+    share, task, path, media = _share_media(token)
+    session_cookie = request.cookies.get(f"nasflow_share_{token[:12]}")
+    if not session_cookie:
+        raise HTTPException(403, "请先点击开始播放")
+    session_hash = hashlib.sha256(session_cookie.encode("utf-8")).hexdigest()
+    with Session(engine) as session:
+        active_session = session.get(MediaShareSession, session_hash)
+        if not active_session or active_session.share_id != share.id or active_session.expires_at <= utcnow().timestamp():
+            raise HTTPException(403, "播放会话已过期，请重新点击开始播放")
     return FileResponse(path, media_type=str(media["mime_type"]), filename=path.name,
                         content_disposition_type="inline", headers={"X-Content-Type-Options": "nosniff"})
 
