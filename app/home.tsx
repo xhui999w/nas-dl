@@ -4,6 +4,7 @@ import { ChangeEvent, FormEvent, MouseEvent as ReactMouseEvent, useEffect, useMe
 import Link from "next/link";
 import { AccountSecurity, LogoutButton } from "./account-controls";
 import "./auth-ui.css";
+import { CollectionGroups, collectionMatches, type Collection } from "./collections";
 
 type Task = {
   id: number | string;
@@ -37,7 +38,7 @@ function SourceMark({ tone, label }: { tone: string; label: string }) {
   return <span className={`source-mark ${tone}`}>{label.slice(0, 1)}</span>;
 }
 
-type ApiTask = {
+export type ApiTask = {
   id: string;
   url: string;
   title: string;
@@ -54,6 +55,7 @@ type ApiTask = {
   obsidian_error?: string;
   output_path?: string;
   media_available?: boolean;
+  collection_index?: number;
 };
 
 type StorageInfo = {
@@ -202,9 +204,18 @@ function extractPastedUrl(input: string): string | null {
   }
 }
 
+function isYoutubePlaylist(value: string) {
+  const parsed = new URL(value);
+  return ["youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be", "www.youtu.be"].includes(parsed.hostname.toLowerCase())
+    && /^[A-Za-z0-9_-]{6,128}$/.test(parsed.searchParams.get("list") || "");
+}
+
 export default function Home({ username }: { username: string }) {
   const [url, setUrl] = useState("");
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [collections, setCollections] = useState<Collection[]>([]);
+  const [focusCollection, setFocusCollection] = useState<{ id: string; request: number } | null>(null);
+  const [submitting, setSubmitting] = useState(false);
   const [quality, setQuality] = useState("自动选择最佳画质");
   const [notice, setNotice] = useState("");
   const [connected, setConnected] = useState(false);
@@ -236,7 +247,7 @@ export default function Home({ username }: { username: string }) {
   const activeTasks = useMemo(() => tasks.filter((task) => task.status === "下载中" || task.status === "排队中"), [tasks]);
   const historyTasks = useMemo(() => tasks.filter((task) => task.status !== "下载中" && task.status !== "排队中"), [tasks]);
   const filteredHistoryTasks = useMemo(() => historyTasks.filter((task) => historyFilter === "all" || (historyFilter === "completed" && task.status === "已完成") || (historyFilter === "failed" && task.status === "失败") || (historyFilter === "cancelled" && task.status === "已取消")), [historyFilter, historyTasks]);
-  const active = activeTasks.length;
+  const active = activeTasks.length + collections.filter((group) => group.running + group.queued > 0 || group.status === "resolving").length;
   const homeTasks = tasks.filter((task) => task.status !== "已完成" && (taskFilter === "active" || (taskFilter === "running" && task.status === "下载中") || (taskFilter === "queued" && task.status === "排队中") || (taskFilter === "failed" && (task.status === "失败" || task.status === "已取消"))));
   const subscriptionsAddedToday = subscriptions.filter((item) => item.created_at && new Date(item.created_at).toDateString() === new Date().toDateString()).length;
   const pendingSubscriptions = subscriptions.filter((item) => item.enabled && !item.last_checked_at).length;
@@ -307,18 +318,20 @@ export default function Home({ username }: { username: string }) {
     async function syncTasks() {
       try {
         const apiBase = await getSelectedApiBase();
-        const [tasksResponse, storageResponse, subscriptionsResponse, cookiesResponse, platformsResponse] = await Promise.all([
+        const [tasksResponse, storageResponse, subscriptionsResponse, cookiesResponse, platformsResponse, collectionsResponse] = await Promise.all([
           fetch(`${apiBase}/api/tasks`),
           fetch(`${apiBase}/api/storage`),
           fetch(`${apiBase}/api/subscriptions`),
           fetch(`${apiBase}/api/cookies`),
           fetch(`${apiBase}/api/subscription-platforms`),
+          fetch(`${apiBase}/api/collections`),
         ]);
         if (tasksResponse.status === 401) { window.location.replace("/login"); return; }
         if (!tasksResponse.ok) throw new Error("offline");
         const items = (await tasksResponse.json()) as ApiTask[];
         if (!disposed) {
           setTasks(items.map(fromApiTask));
+          if (collectionsResponse.ok) setCollections(await collectionsResponse.json() as Collection[]);
           if (storageResponse.ok) setStorage((await storageResponse.json()) as StorageInfo);
           if (subscriptionsResponse.ok) setSubscriptions((await subscriptionsResponse.json()) as Subscription[]);
           if (cookiesResponse.ok && !cookieEditingRef.current) {
@@ -353,6 +366,7 @@ export default function Home({ username }: { username: string }) {
 
   async function createTask(event: FormEvent) {
     event.preventDefault();
+    if (submitting) return;
     const pasted = url.trim();
     if (!pasted) {
       setNotice("先粘贴一个视频、图集或作品集链接");
@@ -365,6 +379,29 @@ export default function Home({ username }: { username: string }) {
     }
     if (!connected) {
       setNotice("NAS 服务尚未连接，请稍后重试");
+      return;
+    }
+    const qualityMap: Record<string, string> = {
+      "自动选择最佳画质": "best", "最高 4K": "4k", "最高 1080P": "1080p", "仅音频": "audio",
+    };
+    if (isYoutubePlaylist(value)) {
+      setSubmitting(true);
+      setNotice("正在读取合集目录，完成后可选择全部或部分视频下载");
+      try {
+        const response = await fetch(`${API_BASE}/api/collections`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url: value, quality: qualityMap[quality], save_to_obsidian: saveToObsidian }),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(typeof payload.detail === "string" ? payload.detail : "合集提交失败");
+        const group = payload as Collection;
+        setCollections((current) => [group, ...current.filter((item) => item.id !== group.id)]);
+        setFocusCollection({ id: group.id, request: Date.now() });
+        setTaskFilter("active");
+        setUrl("");
+        setNotice("合集已打开，目录读取完成后点击“下载全部”或勾选需要的视频");
+      } catch (cause) { setNotice(cause instanceof Error ? cause.message : "合集提交失败，请稍后重试"); }
+      finally { setSubmitting(false); }
       return;
     }
     const optimisticTask: Task = {
@@ -381,12 +418,6 @@ export default function Home({ username }: { username: string }) {
     setUrl("");
     setNotice("正在提交任务，NASFlow 会自动识别内容类型");
     const apiBase = await getSelectedApiBase();
-    const qualityMap: Record<string, string> = {
-      "自动选择最佳画质": "best",
-      "最高 4K": "4k",
-      "最高 1080P": "1080p",
-      "仅音频": "audio",
-    };
     try {
       const response = await fetch(`${apiBase}/api/tasks`, {
         method: "POST",
@@ -680,6 +711,10 @@ export default function Home({ username }: { username: string }) {
     }
   }
 
+  function updateCollection(group: Collection) {
+    setCollections((current) => current.map((item) => item.id === group.id ? group : item));
+  }
+
   async function openShareManager(task: Task) {
     if (typeof task.id !== "string") return;
     setShareTask(task);
@@ -770,7 +805,7 @@ export default function Home({ username }: { username: string }) {
           <div className="capture-copy"><span className="spark">✦</span><div><h2>把喜欢的内容，带回家。</h2><p>粘贴视频、图集或作品集链接；完成后可在媒体库保存到电脑或手机。</p></div></div>
           <form onSubmit={createTask}>
             <label><span>↗</span><input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="粘贴链接或抖音分享文案..." aria-label="媒体链接" /></label>
-            <button type="submit">开始下载 <span>→</span></button>
+            <button type="submit" disabled={submitting}>{submitting ? "正在读取…" : "开始下载"} <span>→</span></button>
           </form>
           <div className="capture-options">
             <div className="capture-option-row supported-row">
@@ -786,8 +821,9 @@ export default function Home({ username }: { username: string }) {
         </section>
 
         <section className="panel task-panel download-center-tasks" id="tasks">
-            <div className="panel-title"><div><h3>当前下载</h3><span>{active} 个进行中 · {tasks.length} 个全部任务</span></div><span className={`connection-badge ${connected ? "online" : ""}`}>{connected ? "服务已连接" : "服务未连接"}</span></div>
-            <div className="task-filter-tabs" aria-label="任务状态筛选">{([['active', '进行中', active], ['running', '下载中', tasks.filter((task) => task.status === '下载中').length], ['queued', '等待中', tasks.filter((task) => task.status === '排队中').length], ['failed', '失败或取消', tasks.filter((task) => task.status === '失败' || task.status === '已取消').length]] as const).map(([value, label, count]) => <button key={value} className={taskFilter === value ? "active" : ""} onClick={() => setTaskFilter(value)}>{label}<span>{count}</span></button>)}</div>
+            <div className="panel-title"><div><h3>当前下载</h3><span>{active} 个进行中 · {tasks.length + collections.length} 个任务（合集按 1 个计）</span></div><span className={`connection-badge ${connected ? "online" : ""}`}>{connected ? "服务已连接" : "服务未连接"}</span></div>
+            <div className="task-filter-tabs" aria-label="任务状态筛选">{([['active', '进行中', active], ['running', '下载中', tasks.filter((task) => task.status === '下载中').length + collections.filter((group) => collectionMatches(group, 'download', 'running')).length], ['queued', '等待中', tasks.filter((task) => task.status === '排队中').length + collections.filter((group) => collectionMatches(group, 'download', 'queued')).length], ['failed', '失败或取消', tasks.filter((task) => task.status === '失败' || task.status === '已取消').length + collections.filter((group) => collectionMatches(group, 'download', 'failed')).length]] as const).map(([value, label, count]) => <button key={value} className={taskFilter === value ? "active" : ""} onClick={() => setTaskFilter(value)}>{label}<span>{count}</span></button>)}</div>
+            <CollectionGroups collections={collections} mode="download" filter={taskFilter} focus={focusCollection} onUpdate={updateCollection} onShare={(item) => void openShareManager(fromApiTask(item))} onSave={(event, item) => void saveTaskToDevice(event, fromApiTask(item))} />
             <div className="task-list">
               {homeTasks.map((task) => (
                 <article className="task" key={task.id}>
@@ -800,7 +836,7 @@ export default function Home({ username }: { username: string }) {
                   <div className="task-row-actions">{task.status === "已完成" && typeof task.id === "string" && <a className="device-download" href={taskFileUrl(task)} download onClick={(event) => saveTaskToDevice(event, task)} aria-label={`保存 ${task.title} 到当前设备`} title="保存到此设备"><span aria-hidden="true">⇩</span></a>}{(task.status === "失败" || task.status === "已取消") && <button onClick={() => retryTask(task)} aria-label={`重试 ${task.title}`}>↻</button>}{(task.status === "下载中" || task.status === "排队中") && <button onClick={() => cancelTask(task)} aria-label={`取消 ${task.title}`}>×</button>}</div>
                 </article>
               ))}
-              {!homeTasks.length && <div className="empty">当前筛选条件下没有任务。</div>}
+              {!homeTasks.length && !collections.some((group) => collectionMatches(group, "download", taskFilter)) && <div className="empty">当前筛选条件下没有任务。</div>}
             </div>
         </section>
 
@@ -810,11 +846,12 @@ export default function Home({ username }: { username: string }) {
 
           <div className="panel recent-panel" id="library">
             <div className="panel-title library-panel-title">
-              <div><h3>历史记录</h3><span>{filteredHistoryTasks.length} 条记录</span></div>
+              <div><h3>历史记录</h3><span>{filteredHistoryTasks.length} 个视频 · {collections.filter((group) => collectionMatches(group, "library", historyFilter)).length} 个合集</span></div>
               <div className="library-filter-tabs" role="tablist" aria-label="历史记录筛选">
-                {([['all', '全部', historyTasks.length], ['completed', '已完成', historyTasks.filter((task) => task.status === '已完成').length], ['failed', '失败', historyTasks.filter((task) => task.status === '失败').length], ['cancelled', '已取消', historyTasks.filter((task) => task.status === '已取消').length]] as const).map(([value, label, count]) => <button key={value} type="button" role="tab" aria-selected={historyFilter === value} className={historyFilter === value ? "active" : ""} onClick={() => setHistoryFilter(value)}>{label}<span>{count}</span></button>)}
+                {([['all', '全部', historyTasks.length], ['completed', '已完成', historyTasks.filter((task) => task.status === '已完成').length], ['failed', '失败', historyTasks.filter((task) => task.status === '失败').length], ['cancelled', '已取消', historyTasks.filter((task) => task.status === '已取消').length]] as const).map(([value, label, count]) => <button key={value} type="button" role="tab" aria-selected={historyFilter === value} className={historyFilter === value ? "active" : ""} onClick={() => setHistoryFilter(value)}>{label}<span>{count + collections.filter((group) => collectionMatches(group, "library", value)).length}</span></button>)}
               </div>
             </div>
+            <CollectionGroups collections={collections} mode="library" filter={historyFilter} onUpdate={updateCollection} onShare={(item) => void openShareManager(fromApiTask(item))} onSave={(event, item) => void saveTaskToDevice(event, fromApiTask(item))} />
             <div className="finished-list">
               {filteredHistoryTasks.map((task, index) => (
                 <article key={task.id}>
@@ -830,7 +867,7 @@ export default function Home({ username }: { username: string }) {
                   </div>
                 </article>
               ))}
-              {!filteredHistoryTasks.length && <div className="empty">当前筛选条件下没有历史记录。</div>}
+              {!filteredHistoryTasks.length && !collections.some((group) => collectionMatches(group, "library", historyFilter)) && <div className="empty">当前筛选条件下没有历史记录。</div>}
             </div>
           </div>
         </section>}

@@ -17,6 +17,7 @@
 - 响应式中文 Web 控制台
 - Docker Compose 部署
 - 管理员登录保护、网页在线播放和限次数/限流量分享
+- YouTube 合集目录、选集下载、合集进度与媒体库文件夹分组（[使用说明](docs/youtube-collections.md)）
 
 首次启动会生成管理员账号 `admin`，初始随机密码保存在 NAS 数据目录的
 `admin-initial-password.txt`，不会通过网页返回。登录后可在“系统设置 → 登录安全”修改。

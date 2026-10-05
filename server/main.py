@@ -19,17 +19,18 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field, computed_field, field_serializer
-from sqlalchemy import delete, inspect, update
+from sqlalchemy import delete, func, inspect, update
 from sqlmodel import Field as DBField
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from server.download_errors import classify_download_error
 from server.media import resolve_task_file, video_available, video_metadata, UNSUPPORTED_MESSAGE
 from server import auth
+from server.playlists import read_playlist, speed_bytes, youtube_playlist_url
 
 DATA_DIR = Path(os.getenv("NASFLOW_DATA", "/data"))
 DOWNLOAD_DIR = Path(os.getenv("NASFLOW_DOWNLOADS", "/downloads"))
@@ -45,8 +46,11 @@ engine = create_engine(
     connect_args={"check_same_thread": False},
 )
 executor = ThreadPoolExecutor(max_workers=MAX_WORKERS, thread_name_prefix="nasflow")
+catalog_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="nasflow-catalog")
 processes: dict[str, subprocess.Popen[str]] = {}
 process_lock = threading.Lock()
+collection_lock = threading.RLock()
+catalog_jobs: set[str] = set()
 PLACEHOLDER_TITLE = "等待解析"
 COOKIE_HOST_ALIASES = {
     "b23.tv": "bilibili.com",
@@ -79,6 +83,9 @@ class Task(SQLModel, table=True):
     retry_count: int = 0
     log_tail: str = ""
     subscription_id: str | None = None
+    collection_id: str | None = DBField(default=None, index=True)
+    collection_index: int | None = None
+    collection_video_id: str | None = None
     save_to_obsidian: bool = False
     obsidian_note_path: str | None = None
     obsidian_error: str | None = None
@@ -134,6 +141,18 @@ class MediaShare(SQLModel, table=True):
     created_at: datetime = DBField(default_factory=utcnow)
 
 
+class Collection(SQLModel, table=True):
+    id: str = DBField(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    url: str = DBField(index=True, unique=True)
+    title: str = "正在读取合集目录"
+    state: str = "resolving"
+    quality: str = "1080p"
+    folder_name: str | None = None
+    save_to_obsidian: bool = False
+    error: str | None = None
+    created_at: datetime = DBField(default_factory=utcnow)
+
+
 class MediaShareSession(SQLModel, table=True):
     token_hash: str = DBField(primary_key=True)
     share_id: str = DBField(index=True)
@@ -156,6 +175,10 @@ class CreateTask(BaseModel):
     quality: Literal["best", "4k", "1080p", "audio"] = "best"
     folder: str = "自动分类"
     save_to_obsidian: bool = False
+
+
+class StartCollection(BaseModel):
+    task_ids: list[str] | None = Field(default=None, max_length=10000)
 
 
 class CreateSubscription(BaseModel):
@@ -413,6 +436,15 @@ def append_log(task_id: str, line: str) -> None:
         session.commit()
 
 
+def finish_running_task(task_id: str, **values: object) -> bool:
+    """Keep cancellation from being overwritten by a downloader finishing."""
+    with Session(engine) as session:
+        changed = session.exec(update(Task).where(Task.id == task_id, Task.status == "running")
+                               .values(**values, updated_at=utcnow()).returning(Task.id)).first()
+        session.commit()
+        return changed is not None
+
+
 def is_placeholder_title(title: str | None) -> bool:
     return not title or not title.strip() or title.strip() == PLACEHOLDER_TITLE
 
@@ -529,6 +561,12 @@ def parse_progress(line: str) -> tuple[float | None, str | None, str | None]:
 
 def build_command(task: Task) -> tuple[list[str], Path]:
     target = DOWNLOAD_DIR / safe_folder(task.folder)
+    if task.collection_id:
+        with Session(engine) as session:
+            collection = session.get(Collection, task.collection_id)
+        if not collection:
+            raise ValueError("合集不存在")
+        target = DOWNLOAD_DIR / "合集" / (collection.folder_name or f"{safe_folder(collection.title)[:100]} [{collection.id[:8]}]")
     target.mkdir(parents=True, exist_ok=True)
     cookie_file = cookie_file_for_url(task.url)
     proxy = configured_proxy()
@@ -547,12 +585,18 @@ def build_command(task: Task) -> tuple[list[str], Path]:
 
     template = str(target / "%(uploader|未知作者)s/%(title)s [%(id)s].%(ext)s")
     infojson_template = str(target / "%(uploader|未知作者)s/%(id)s.info.json")
+    if task.collection_id:
+        template = str(target / f"{task.collection_index or 0:04d} - %(title)s [%(id)s].%(ext)s")
+        infojson_template = str(target / "%(id)s.info.json")
     formats = {
         "best": "bv*+ba/b",
         "4k": "bv*[height<=2160]+ba/b[height<=2160]",
         "1080p": "bv*[height<=1080]+ba/b[height<=1080]",
         "audio": "ba/b",
     }
+    if task.collection_id and task.quality != "audio":
+        height = {"4k": "[height<=2160]", "1080p": "[height<=1080]"}.get(task.quality, "")
+        formats[task.quality] = f"bv[ext=mp4][vcodec^=avc1]{height}+ba[ext=m4a]/b[ext=mp4][vcodec^=avc1]{height}"
     command = [
         sys.executable, "-m", "yt_dlp", "--newline", "--progress", "--write-info-json",
         "--write-thumbnail",
@@ -562,7 +606,9 @@ def build_command(task: Task) -> tuple[list[str], Path]:
         "-o", f"infojson:{infojson_template}",
         "-f", formats.get(task.quality, formats["best"]),
     ]
-    if task.subscription_id:
+    if task.collection_id:
+        command += ["--no-playlist", "--merge-output-format", "mp4"]
+    elif task.subscription_id:
         archive_dir = DATA_DIR / "archives"
         archive_dir.mkdir(parents=True, exist_ok=True)
         command += ["--download-archive", str(archive_dir / f"{task.subscription_id}.txt"), "--lazy-playlist"]
@@ -629,22 +675,25 @@ def write_obsidian_note(task_id: str) -> None:
 def run_download(task_id: str) -> None:
     with Session(engine) as session:
         task = session.get(Task, task_id)
-        if not task or task.status == "cancelled":
+        if not task or task.status != "queued":
             return
-        command, target = build_command(task)
-
-    update_task(task_id, status="running", speed=None, eta=None, error=None, error_type=None, output_path=str(target))
+        claimed = session.exec(update(Task).where(Task.id == task_id, Task.status == "queued")
+                               .values(status="running", updated_at=utcnow()).returning(Task.id)).first()
+        session.commit()
+        if not claimed:
+            return
+        session.refresh(task)
     try:
-        process = subprocess.Popen(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
-        )
+        command, target = build_command(task)
+        update_task(task_id, speed=None, eta=None, error=None, error_type=None, output_path=str(target))
         with process_lock:
+            with Session(engine) as session:
+                current = session.get(Task, task_id)
+                if not current or current.status != "running":
+                    return
+            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                       text=True, encoding="utf-8", errors="replace",
+                                       env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"})
             processes[task_id] = process
         assert process.stdout
         for raw_line in process.stdout:
@@ -672,25 +721,19 @@ def run_download(task_id: str) -> None:
                 update_task(task_id, **values)
 
         code = process.wait()
-        with Session(engine) as session:
-            current = session.get(Task, task_id)
-            was_cancelled = current is not None and current.status == "cancelled"
-        if not was_cancelled:
-            if code == 0:
-                update_task(task_id, status="completed", progress=100, eta=None, error_type=None)
+        if code == 0:
+            if finish_running_task(task_id, status="completed", progress=100, speed=None, eta=None, error_type=None):
                 write_obsidian_note(task_id)
-            else:
-                with Session(engine) as session:
-                    failed_task = session.get(Task, task_id)
-                    log_tail = failed_task.log_tail if failed_task else ""
-                update_task(
-                    task_id,
-                    status="failed",
-                    error=f"{task.engine} 退出码 {code}",
-                    error_type=classify_download_error(log_tail),
-                )
+        else:
+            with Session(engine) as session:
+                failed_task = session.get(Task, task_id)
+                log_tail = failed_task.log_tail if failed_task else ""
+            finish_running_task(task_id, status="failed", speed=None, eta=None,
+                                error=f"{task.engine} 退出码 {code}",
+                                error_type=classify_download_error(log_tail))
     except Exception as exc:
-        update_task(task_id, status="failed", error=str(exc), error_type=classify_download_error(str(exc)))
+        finish_running_task(task_id, status="failed", speed=None, eta=None,
+                            error=str(exc), error_type=classify_download_error(str(exc)))
     finally:
         with process_lock:
             processes.pop(task_id, None)
@@ -709,6 +752,9 @@ def migrate_schema() -> None:
         "retry_count": "INTEGER NOT NULL DEFAULT 0",
         "log_tail": "TEXT NOT NULL DEFAULT ''",
         "subscription_id": "TEXT",
+        "collection_id": "TEXT",
+        "collection_index": "INTEGER",
+        "collection_video_id": "TEXT",
         "error_type": "TEXT",
         "save_to_obsidian": "BOOLEAN NOT NULL DEFAULT 0",
         "obsidian_note_path": "TEXT",
@@ -718,6 +764,8 @@ def migrate_schema() -> None:
         for name, definition in additions.items():
             if name not in columns:
                 connection.exec_driver_sql(f"ALTER TABLE task ADD COLUMN {name} {definition}")
+        connection.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_task_collection_id ON task (collection_id)")
+        connection.exec_driver_sql("CREATE UNIQUE INDEX IF NOT EXISTS ix_collection_video ON task (collection_id, collection_video_id)")
         share_additions = {
             "byte_limit": "INTEGER NOT NULL DEFAULT 0",
             "transferred_bytes": "INTEGER NOT NULL DEFAULT 0",
@@ -736,13 +784,17 @@ def on_startup() -> None:
     with Session(engine) as session:
         interrupted = session.exec(select(Task).where(Task.status.in_(["running", "queued"]))).all()
         for task in interrupted:
-            task.status = "queued"
+            collection = session.get(Collection, task.collection_id) if task.collection_id else None
+            task.status = "paused" if collection and collection.state == "paused" else "cancelled" if collection and collection.state == "cancelled" else "queued"
             task.error = "服务重启后已自动恢复"
             session.add(task)
         session.commit()
-        ids = [task.id for task in interrupted]
+        ids = [task.id for task in interrupted if task.status == "queued"]
+        catalog_ids = list(session.exec(select(Collection.id).where(Collection.state == "resolving")).all())
     for task_id in ids:
         dispatch(task_id)
+    for collection_id in catalog_ids:
+        dispatch_catalog(collection_id)
 
 
 @app.on_event("shutdown")
@@ -775,12 +827,259 @@ def storage() -> dict[str, int | float | str]:
 
 
 @app.get("/api/tasks", response_model=list[TaskView])
-def list_tasks(status: str | None = None) -> list[Task]:
+def list_tasks(status: str | None = None, include_collections: bool = False) -> list[Task]:
     with Session(engine) as session:
         statement = select(Task).order_by(Task.created_at.desc())
+        if not include_collections:
+            statement = statement.where(Task.collection_id == None)
         if status:
             statement = statement.where(Task.status == status)
         return list(session.exec(statement).all())
+
+
+def collection_summaries(collection_id: str | None = None) -> list[dict]:
+    with Session(engine) as session:
+        statement = select(Collection).order_by(Collection.created_at.desc())
+        if collection_id:
+            statement = statement.where(Collection.id == collection_id)
+        groups = session.exec(statement).all()
+        if collection_id and not groups:
+            raise HTTPException(404, "合集不存在")
+        ids = [group.id for group in groups]
+        counts: dict[str, dict[str, int]] = {group.id: {} for group in groups}
+        if ids:
+            rows = session.exec(select(Task.collection_id, Task.status, func.count(Task.id))
+                                .where(Task.collection_id.in_(ids)).group_by(Task.collection_id, Task.status)).all()
+            for key, status, count in rows:
+                counts[key][status] = count
+        speeds: dict[str, float] = {}
+        for key, value in session.exec(select(Task.collection_id, Task.speed)
+                                       .where(Task.collection_id.in_(ids), Task.status == "running")).all() if ids else []:
+            speeds[key] = speeds.get(key, 0) + speed_bytes(value)
+        result = []
+        for group in groups:
+            values = {key: counts[group.id].get(key, 0) for key in ("pending", "queued", "running", "paused", "completed", "failed", "cancelled")}
+            total = sum(values.values())
+            selected = total - values["pending"]
+            status = group.state
+            if status == "active":
+                status = "running" if values["running"] else "queued" if values["queued"] else "paused" if values["paused"] else "failed" if values["failed"] else "cancelled" if values["cancelled"] else "completed" if selected else "ready"
+            result.append({"id": group.id, "title": group.title, "url": group.url,
+                           "state": group.state, "status": status, "error": group.error,
+                           "quality": group.quality, "total": total, "selected": selected, **values,
+                           "progress": round(values["completed"] / selected * 100, 1) if selected else 0,
+                           "speed_bytes": speeds.get(group.id, 0), "created_at": group.created_at})
+        return result
+
+
+def resolve_collection(collection_id: str) -> None:
+    try:
+        with Session(engine) as session:
+            collection = session.get(Collection, collection_id)
+            if not collection or collection.state != "resolving":
+                return
+            url = collection.url
+            existing = set(session.exec(select(Task.collection_video_id).where(Task.collection_id == collection_id)).all())
+        batch = []
+
+        def save_batch():
+            with collection_lock, Session(engine) as session:
+                current = session.get(Collection, collection_id)
+                if not current or current.state != "resolving":
+                    return False
+                for entry in batch:
+                    session.add(Task(url=entry["url"], title=entry["title"], status="pending", engine="yt-dlp",
+                                     collection_id=collection_id, collection_index=int(entry["index"]),
+                                     collection_video_id=entry["video_id"], quality=current.quality,
+                                     save_to_obsidian=current.save_to_obsidian, folder="合集"))
+                session.commit()
+                batch.clear()
+                return True
+
+        started = time.monotonic()
+        for entry in read_playlist(url, cookie_file_for_url(url), configured_proxy()):
+            if time.monotonic() - started > 900:
+                raise TimeoutError("读取目录超时")
+            if "video_id" not in entry:
+                with collection_lock, Session(engine) as session:
+                    current = session.get(Collection, collection_id)
+                    if not current or current.state != "resolving":
+                        return
+                    current.title = str(entry["title"])[:300]
+                    if not current.folder_name:
+                        current.folder_name = f"{safe_folder(current.title)[:100]} [{current.id[:8]}]"
+                    session.add(current)
+                    session.commit()
+                continue
+            if entry["video_id"] in existing:
+                continue
+            existing.add(entry["video_id"])
+            batch.append(entry)
+            if len(batch) >= 25 and not save_batch():
+                return
+        if not save_batch():
+            return
+        with collection_lock, Session(engine) as session:
+            current = session.get(Collection, collection_id)
+            if current and current.state == "resolving":
+                if not existing:
+                    raise ValueError("播放列表没有可读取的视频")
+                current.state = "ready"
+                current.error = None
+                session.add(current)
+                session.commit()
+    except Exception as exc:
+        with collection_lock, Session(engine) as session:
+            current = session.get(Collection, collection_id)
+            if current and current.state == "resolving":
+                category = classify_download_error(str(exc))
+                messages = {"COOKIE_REQUIRED": "读取合集需要 YouTube Cookie，请在账号与 Cookies 中配置。",
+                            "LOGIN_REQUIRED": "该合集需要登录，请配置 YouTube Cookie。",
+                            "NETWORK_ERROR": "读取合集网络连接失败，请检查代理后重新读取。"}
+                current.state = "failed"
+                current.error = messages.get(category, "合集目录读取失败，请确认播放列表可访问后重新读取。")
+                session.add(current)
+                session.commit()
+
+
+def dispatch_catalog(collection_id: str) -> None:
+    with collection_lock:
+        if collection_id in catalog_jobs:
+            return
+        catalog_jobs.add(collection_id)
+    def work():
+        try:
+            resolve_collection(collection_id)
+        finally:
+            with collection_lock:
+                catalog_jobs.discard(collection_id)
+    catalog_executor.submit(work)
+
+
+@app.get("/api/collections")
+def list_collections() -> list[dict]:
+    return collection_summaries()
+
+
+@app.post("/api/collections", status_code=201)
+def create_collection(payload: CreateTask) -> dict:
+    url = youtube_playlist_url(payload.url)
+    if not url:
+        raise HTTPException(422, "请粘贴含 list= 的 YouTube 播放列表链接")
+    with collection_lock, Session(engine) as session:
+        collection = session.exec(select(Collection).where(Collection.url == url)).first()
+        if collection:
+            return collection_summaries(collection.id)[0]
+        collection = Collection(url=url, quality=payload.quality, save_to_obsidian=payload.save_to_obsidian)
+        session.add(collection)
+        session.commit()
+        session.refresh(collection)
+        collection_id = collection.id
+    dispatch_catalog(collection_id)
+    return collection_summaries(collection_id)[0]
+
+
+@app.get("/api/collections/{collection_id}/entries")
+def collection_entries(collection_id: str, page: int = Query(default=1, ge=1),
+                       page_size: int = Query(default=50, ge=1, le=100),
+                       view: Literal["download", "library"] = "download",
+                       status: Literal["all", "pending", "completed", "failed", "cancelled"] = "all") -> dict:
+    summary = collection_summaries(collection_id)[0]
+    with Session(engine) as session:
+        filters = [Task.collection_id == collection_id]
+        if view == "library":
+            filters.append(Task.status.in_(["completed", "failed", "cancelled"]))
+        if status != "all":
+            filters.append(Task.status == status)
+        total = session.exec(select(func.count(Task.id)).where(*filters)).one()
+        entries = session.exec(select(Task).where(*filters).order_by(Task.collection_index, Task.id)
+                               .offset((page - 1) * page_size).limit(page_size)).all()
+        return {"collection": summary, "page": page, "page_size": page_size, "total": total,
+                "entries": [TaskView.model_validate(entry).model_dump() for entry in entries]}
+
+
+@app.post("/api/collections/{collection_id}/start")
+def start_collection(collection_id: str, payload: StartCollection) -> dict:
+    with collection_lock, Session(engine) as session:
+        collection = session.get(Collection, collection_id)
+        if not collection:
+            raise HTTPException(404, "合集不存在")
+        if collection.state == "resolving" or collection.error:
+            raise HTTPException(409, "请先完成合集目录读取")
+        statement = select(Task).where(Task.collection_id == collection_id, Task.status == "pending")
+        if payload.task_ids is not None:
+            if not payload.task_ids:
+                raise HTTPException(422, "请先选择视频")
+            statement = statement.where(Task.id.in_(payload.task_ids))
+            valid_ids = set(session.exec(select(Task.id).where(Task.collection_id == collection_id, Task.id.in_(payload.task_ids))).all())
+            if valid_ids != set(payload.task_ids):
+                raise HTTPException(422, "选中的视频不属于该合集")
+        tasks = session.exec(statement).all()
+        ids = []
+        for task in tasks:
+            claimed = session.exec(update(Task).where(Task.id == task.id, Task.status == "pending")
+                                   .values(status="queued", updated_at=utcnow()).returning(Task.id)).first()
+            if claimed:
+                ids.append(claimed)
+        collection.state = "active"
+        session.add(collection)
+        session.commit()
+    for task_id in ids:
+        dispatch(task_id)
+    return collection_summaries(collection_id)[0]
+
+
+@app.post("/api/collections/{collection_id}/{action}")
+def control_collection(collection_id: str, action: Literal["pause", "resume", "cancel", "retry", "rescan"]) -> dict:
+    with collection_lock, Session(engine) as session:
+        collection = session.get(Collection, collection_id)
+        if not collection:
+            raise HTTPException(404, "合集不存在")
+        if action == "rescan":
+            busy = session.exec(select(Task.id).where(Task.collection_id == collection_id, Task.status.in_(["running", "queued"]))).first()
+            if busy or collection_id in catalog_jobs:
+                raise HTTPException(409, "请在合集停止下载或读取后重新读取目录")
+            collection.state = "resolving"
+            collection.error = None
+            session.add(collection)
+            session.commit()
+            ids = []
+        else:
+            if collection.state == "resolving" and action != "cancel":
+                raise HTTPException(409, "合集目录正在读取")
+            if collection.error and action in {"resume", "retry"}:
+                raise HTTPException(409, "请先重新读取合集目录")
+            source = {"pause": ["queued"], "resume": ["paused", "cancelled"],
+                      "cancel": ["paused", "queued", "running"], "retry": ["failed"]}[action]
+            tasks = session.exec(select(Task).where(Task.collection_id == collection_id, Task.status.in_(source))).all()
+            with process_lock:
+                if action in {"resume", "retry"} and any(task.id in processes for task in tasks):
+                    raise HTTPException(409, "下载进程正在结束，请稍后重试")
+            ids = []
+            for task in tasks:
+                values = {"status": {"pause": "paused", "cancel": "cancelled"}.get(action, "queued"),
+                          "speed": None, "eta": None, "error": "用户取消" if action == "cancel" else None,
+                          "error_type": None, "updated_at": utcnow()}
+                if action == "retry":
+                    values.update(retry_count=Task.retry_count + 1, progress=0)
+                changed = session.exec(update(Task).where(Task.id == task.id, Task.status.in_(source))
+                                       .values(**values).returning(Task.id)).first()
+                if changed:
+                    ids.append(changed)
+            collection.state = {"pause": "paused", "cancel": "cancelled"}.get(action, "active")
+            session.add(collection)
+            session.commit()
+    if action == "rescan":
+        dispatch_catalog(collection_id)
+    elif action in {"resume", "retry"}:
+        for task_id in ids:
+            dispatch(task_id)
+    elif action == "cancel":
+        with process_lock:
+            running = [processes[task_id] for task_id in ids if task_id in processes]
+        for process in running:
+            process.terminate()
+    return collection_summaries(collection_id)[0]
 
 
 @app.get("/api/tasks/{task_id}", response_model=TaskView)
@@ -1103,6 +1402,8 @@ def stream_shared_media(token: str, request: Request) -> FileResponse:
 def create_task(payload: CreateTask) -> Task:
     if not valid_url(payload.url):
         raise HTTPException(422, "请输入有效的 HTTP/HTTPS 链接")
+    if youtube_playlist_url(payload.url):
+        raise HTTPException(422, "这是 YouTube 合集链接，请通过新版下载中心读取合集目录")
     task = Task(
         url=payload.url,
         engine=choose_engine(payload.url, payload.kind),
@@ -1141,12 +1442,22 @@ def cancel_task(task_id: str) -> Task:
 
 @app.post("/api/tasks/{task_id}/retry", response_model=TaskView)
 def retry_task(task_id: str) -> Task:
+    with process_lock:
+        if task_id in processes:
+            raise HTTPException(409, "下载进程正在结束，请稍后重试")
     with Session(engine) as session:
         task = session.get(Task, task_id)
         if not task:
             raise HTTPException(404, "任务不存在")
         if task.status not in {"failed", "cancelled"}:
             raise HTTPException(409, "只有失败或取消的任务可以重试")
+        if task.collection_id:
+            collection = session.get(Collection, task.collection_id)
+            if collection and collection.state in {"paused", "resolving"}:
+                raise HTTPException(409, "请先继续合集下载")
+            if collection:
+                collection.state = "active"
+                session.add(collection)
         task.status = "queued"
         task.progress = 0
         task.speed = None
