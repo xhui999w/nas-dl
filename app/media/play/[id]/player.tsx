@@ -6,7 +6,7 @@ import "plyr/dist/plyr.css";
 import "./player.css";
 
 const UNSUPPORTED = "当前视频格式暂不支持网页直接播放，可下载后使用本地播放器观看。";
-type Media = { id: string; title: string; source: string; format: string; mime_type: string | null; supported: boolean; message: string | null; max_plays?: number; play_count?: number; remaining_plays?: number };
+type Media = { id?: string; title: string; source: string; format: string; mime_type: string | null; supported: boolean; message: string | null; max_plays?: number; play_count?: number; remaining_plays?: number };
 
 export default function MediaPlayer({ id, shareToken }: { id?: string; shareToken?: string }) {
   const [media, setMedia] = useState<Media | null>(null);
@@ -91,7 +91,7 @@ export default function MediaPlayer({ id, shareToken }: { id?: string; shareToke
         fullscreen: { enabled: true, fallback: true, iosNative: true },
         i18n: { play: "播放", pause: "暂停", mute: "静音", unmute: "取消静音", volume: "音量", settings: "设置", speed: "倍速", normal: "正常", enterFullscreen: "全屏", exitFullscreen: "退出全屏", pip: "画中画", seek: "进度", currentTime: "当前时间", duration: "时长" },
       });
-      const storageKey = `nasflow:playback:v1:${media.id}`;
+      const storageKey = `nasflow:playback:v1:${shareToken || media.id || id || ""}`;
       let restored = false;
       const restore = () => {
         if (restored || !Number.isFinite(video.duration) || video.duration <= 0) return;
@@ -172,7 +172,7 @@ export default function MediaPlayer({ id, shareToken }: { id?: string; shareToke
         {shareToken && <p className="media-info">此分享链接仅提供网页播放，不提供下载入口。</p>}
         {shareToken && media && <p className="share-play-count">此链接已使用 {media.play_count || 0} / {media.max_plays || 0} 次{media.remaining_plays === 0 ? " · 播放次数已用完" : ""}</p>}
         {!media && !error && <p role="status">正在读取视频信息…</p>}
-        {message && <div className="media-message" role="alert"><p>{message}</p>{media && !shareToken && <a href={`/nas-api/api/tasks/${encodeURIComponent(media.id)}/file`} download>下载后观看 ⇩</a>}</div>}
+        {message && <div className="media-message" role="alert"><p>{message}</p>{media && media.id && !shareToken && <a href={`/nas-api/api/tasks/${encodeURIComponent(media.id)}/file`} download>下载后观看 ⇩</a>}</div>}
         <div ref={containerRef} className="media-video" hidden={Boolean(message) || !media?.supported} />
         {shareToken && media?.supported && !shareReady && <div className="share-start"><p>{media.remaining_plays === 0 ? "播放额度已用完；本浏览器已有会话仍可继续。" : "点击后开始播放，并计入一次播放。"}</p><button type="button" disabled={startingShare} onClick={() => void beginSharePlayback()}>{startingShare ? "正在准备…" : media.remaining_plays === 0 ? "继续播放 / 检查会话" : "▶ 开始播放"}</button></div>}
         {isAndroid && id && <div className="external-player"><button type="button" onClick={openInSystemPlayer}>↗ 用系统播放器打开</button><span>如果浏览器无法播放，可用手机播放器打开。</span></div>}

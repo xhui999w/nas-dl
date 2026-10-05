@@ -791,7 +791,7 @@ def revoke_media_share(share_id: str) -> dict[str, bool]:
 @app.get("/api/shares/{token}")
 def get_shared_media(token: str) -> dict[str, object]:
     share, task, _path, media = _share_media(token)
-    return {"id": task.id, "title": task.title, "source": platform_for_url(task.url), **media,
+    return {"title": task.title, "source": platform_for_url(task.url), **media,
             "max_plays": share.max_plays, "play_count": share.play_count,
             "remaining_plays": max(0, share.max_plays - share.play_count)}
 
