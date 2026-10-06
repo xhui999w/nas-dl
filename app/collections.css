@@ -8,6 +8,7 @@
 .collection-status { color: #6b54e8; font-size: 12px; white-space: nowrap; }
 .collection-status.failed, .collection-episode-status.failed { color: #d15e70; }
 .collection-status.completed, .collection-episode-status.completed { color: #59ad88; }
+.collection-episode-status.missing { color: #b7791f; }
 .collection-controls, .collection-selection { display: flex; gap: 8px; flex-wrap: wrap; padding: 0 20px 16px 82px; }
 .collection-controls button, .collection-selection button, .collection-pagination button { border: 0; border-radius: 8px; padding: 7px 10px; font: inherit; font-size: 12px; color: #6b54e8; background: #f2efff; cursor: pointer; }
 .collection-group button:disabled { opacity: .45; cursor: default; }

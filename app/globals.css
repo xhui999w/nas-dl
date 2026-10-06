@@ -163,6 +163,7 @@ header p { margin: 0; color: var(--muted); font-size: 12px; }
 .history-status.completed { color: #2faf70; }
 .history-status.failed { color: #d94b4b; }
 .history-status.cancelled { color: #8f8b99; }
+.history-status.missing { color: #b7791f; }
 .library-panel-title { gap: 14px; }
 .library-filter-tabs { display: flex; gap: 5px; margin-left: auto; }
 .library-filter-tabs button { display: flex; align-items: center; gap: 5px; height: 28px; padding: 0 9px; border: 0; border-radius: 7px; background: transparent; color: #85828f; cursor: pointer; font-size: 9px; }

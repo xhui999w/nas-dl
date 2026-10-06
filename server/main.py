@@ -28,7 +28,7 @@ from sqlmodel import Field as DBField
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from server.download_errors import classify_download_error
-from server.media import resolve_task_file, video_available, video_metadata, UNSUPPORTED_MESSAGE
+from server.media import file_available, resolve_task_file, video_available, video_metadata, UNSUPPORTED_MESSAGE
 from server import auth
 from server.playlists import read_playlist, speed_bytes, youtube_playlist_url
 
@@ -95,6 +95,11 @@ class Task(SQLModel, table=True):
 
 class TaskView(Task):
     """API-only fields; no database migration or new stored paths."""
+
+    @computed_field
+    @property
+    def file_available(self) -> bool:
+        return file_available(self.status, self.output_path, DOWNLOAD_DIR)
 
     @computed_field
     @property
@@ -1449,8 +1454,9 @@ def retry_task(task_id: str) -> Task:
         task = session.get(Task, task_id)
         if not task:
             raise HTTPException(404, "任务不存在")
-        if task.status not in {"failed", "cancelled"}:
-            raise HTTPException(409, "只有失败或取消的任务可以重试")
+        missing_file = task.status == "completed" and not file_available(task.status, task.output_path, DOWNLOAD_DIR)
+        if task.status not in {"failed", "cancelled"} and not missing_file:
+            raise HTTPException(409, "只有失败、取消或文件不存在的任务可以重试")
         if task.collection_id:
             collection = session.get(Collection, task.collection_id)
             if collection and collection.state in {"paused", "resolving"}:
@@ -1464,6 +1470,8 @@ def retry_task(task_id: str) -> Task:
         task.eta = None
         task.error = None
         task.error_type = None
+        if missing_file:
+            task.output_path = None
         task.retry_count += 1
         task.updated_at = utcnow()
         session.add(task)

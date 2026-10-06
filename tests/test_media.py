@@ -58,8 +58,36 @@ class MediaTests(unittest.TestCase):
         response = self.client.get("/api/tasks")
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()[0]["media_available"])
+        self.assertTrue(response.json()[0]["file_available"])
         self.assertEqual(response.json()[0]["output_path"], self.video.name)
         self.assertNotIn(str(self.root), response.text)
+
+    def test_file_availability_changes_when_deleted_and_restored(self):
+        self.assertTrue(self.client.get(f"/api/tasks/{self.id}").json()["file_available"])
+        self.video.unlink()
+        record = self.client.get(f"/api/tasks/{self.id}").json()
+        self.assertEqual(record["status"], "completed")
+        self.assertEqual(record["title"], "测试视频名称")
+        self.assertFalse(record["file_available"])
+        self.assertFalse(record["media_available"])
+        self.assertFalse(self.client.get("/api/tasks").json()[0]["file_available"])
+        self.assertEqual(self.client.get(f"/api/tasks/{self.id}/file").status_code, 404)
+        self.video.write_bytes(self.content)
+        self.assertTrue(self.client.get(f"/api/tasks/{self.id}").json()["file_available"])
+
+    def test_retry_missing_file_reuses_the_record_but_rejects_existing_files(self):
+        with patch.object(main, "dispatch") as dispatch:
+            self.assertEqual(self.client.post(f"/api/tasks/{self.id}/retry").status_code, 409)
+            self.video.unlink()
+            response = self.client.post(f"/api/tasks/{self.id}/retry")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["id"], self.id)
+            self.assertEqual(response.json()["status"], "queued")
+            self.assertEqual(response.json()["progress"], 0)
+            self.assertEqual(response.json()["retry_count"], 1)
+            self.assertIsNone(response.json()["output_path"])
+            dispatch.assert_called_once_with(self.id)
+            self.assertEqual(len(self.client.get("/api/tasks").json()), 1)
 
     def test_exact_middle_range_and_headers(self):
         response = self.client.get(f"/api/media/{self.id}/stream", headers={"Range": "bytes=100000-100099"})
@@ -208,10 +236,12 @@ class MediaTests(unittest.TestCase):
             self.assertEqual(self.client.get(f"/api/media/{task_id}").status_code, expected)
             self.assertEqual(self.client.get(f"/api/media/{task_id}/stream").status_code, expected)
             self.assertFalse(self.client.get(f"/api/tasks/{task_id}").json()["media_available"])
+            self.assertFalse(self.client.get(f"/api/tasks/{task_id}").json()["file_available"])
         image = self.root / "photo.jpg"
         image.write_bytes(b"image")
         task_id = self.add_task(image)
         self.assertFalse(self.client.get(f"/api/tasks/{task_id}").json()["media_available"])
+        self.assertTrue(self.client.get(f"/api/tasks/{task_id}").json()["file_available"])
         self.assertEqual(self.client.get(f"/api/media/{task_id}").status_code, 415)
         self.assertEqual(self.client.get("/api/media/not-a-record/stream").status_code, 404)
 
@@ -222,6 +252,7 @@ class MediaTests(unittest.TestCase):
             task_id = self.add_task(path)
             self.assertEqual(self.client.get(f"/api/media/{task_id}/stream").status_code, 403)
             self.assertFalse(self.client.get(f"/api/tasks/{task_id}").json()["media_available"])
+            self.assertFalse(self.client.get(f"/api/tasks/{task_id}").json()["file_available"])
         link = self.root / "symlink.mp4"
         try:
             link.symlink_to(outside)

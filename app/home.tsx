@@ -10,7 +10,7 @@ type Task = {
   id: number | string;
   title: string;
   source: string;
-  status: "下载中" | "排队中" | "已完成" | "失败" | "已取消";
+  status: "下载中" | "排队中" | "已完成" | "失败" | "已取消" | "文件不存在";
   progress: number;
   meta: string;
   tone: string;
@@ -55,6 +55,7 @@ export type ApiTask = {
   obsidian_error?: string;
   output_path?: string;
   media_available?: boolean;
+  file_available?: boolean;
   collection_index?: number;
 };
 
@@ -172,14 +173,15 @@ function taskTitle(item: ApiTask): string {
 
 function fromApiTask(item: ApiTask): Task {
   const host = new URL(item.url).hostname.replace("www.", "");
+  const missingFile = item.status === "completed" && item.file_available === false;
   const details = (item.error_type && errorTypeLabels[item.error_type]) || item.error || [item.speed, item.eta ? `剩余 ${item.eta}` : ""].filter(Boolean).join(" · ") || item.engine;
   return {
     id: item.id,
     title: taskTitle(item),
     source: host,
-    status: statusLabels[item.status] || "排队中",
+    status: missingFile ? "文件不存在" : statusLabels[item.status] || "排队中",
     progress: item.progress,
-    meta: details,
+    meta: missingFile ? "文件已删除或移走，可重新下载" : details,
     tone: item.status === "failed" ? "red" : item.engine === "gallery-dl" ? "orange" : "violet",
     backendStatus: item.status,
     speed: item.speed,
@@ -248,7 +250,7 @@ export default function Home({ username }: { username: string }) {
   const historyTasks = useMemo(() => tasks.filter((task) => task.status !== "下载中" && task.status !== "排队中"), [tasks]);
   const filteredHistoryTasks = useMemo(() => historyTasks.filter((task) => historyFilter === "all" || (historyFilter === "completed" && task.status === "已完成") || (historyFilter === "failed" && task.status === "失败") || (historyFilter === "cancelled" && task.status === "已取消")), [historyFilter, historyTasks]);
   const active = activeTasks.length + collections.filter((group) => group.running + group.queued > 0 || group.status === "resolving").length;
-  const homeTasks = tasks.filter((task) => task.status !== "已完成" && (taskFilter === "active" || (taskFilter === "running" && task.status === "下载中") || (taskFilter === "queued" && task.status === "排队中") || (taskFilter === "failed" && (task.status === "失败" || task.status === "已取消"))));
+  const homeTasks = tasks.filter((task) => task.status !== "已完成" && task.status !== "文件不存在" && (taskFilter === "active" || (taskFilter === "running" && task.status === "下载中") || (taskFilter === "queued" && task.status === "排队中") || (taskFilter === "failed" && (task.status === "失败" || task.status === "已取消"))));
   const subscriptionsAddedToday = subscriptions.filter((item) => item.created_at && new Date(item.created_at).toDateString() === new Date().toDateString()).length;
   const pendingSubscriptions = subscriptions.filter((item) => item.enabled && !item.last_checked_at).length;
   const latestSubscriptionSync = subscriptions.map((item) => item.last_checked_at).filter(Boolean).sort().at(-1);
@@ -857,12 +859,12 @@ export default function Home({ username }: { username: string }) {
                 <article key={task.id}>
                   <span className={`finished-cover cover-${index % 3 + 1}`}>{task.source.slice(0, 1)}</span>
                   <div><h4>{task.title}</h4><p>{task.source} · {task.meta}</p></div>
-                  <time className={`history-status ${task.backendStatus || ""}`}>{task.status}</time>
+                  <time className={`history-status ${task.status === "文件不存在" ? "missing" : task.backendStatus || ""}`}>{task.status}</time>
                   <div className="history-actions">
                     {task.status === "已完成" && task.mediaAvailable && typeof task.id === "string" && <Link className="media-play" href={`/media/play/${encodeURIComponent(task.id)}`} prefetch={false} aria-label={`播放 ${task.title}`} title="播放"><span aria-hidden="true">▶</span></Link>}
                     {task.status === "已完成" && task.mediaAvailable && typeof task.id === "string" && <button type="button" className="media-share" onClick={() => void openShareManager(task)} aria-label={`分享 ${task.title}`} title="分享播放链接">↗</button>}
                     {task.status === "已完成" && typeof task.id === "string" && <a className="device-download" href={taskFileUrl(task)} download onClick={(event) => saveTaskToDevice(event, task)} aria-label={`保存 ${task.title} 到当前设备`} title="保存到此设备"><span aria-hidden="true">⇩</span></a>}
-                    {(task.status === "失败" || task.status === "已取消") && <button onClick={() => retryTask(task)} aria-label={`重试 ${task.title}`}>↻</button>}
+                    {(task.status === "失败" || task.status === "已取消" || task.status === "文件不存在") && <button onClick={() => retryTask(task)} aria-label={`${task.status === "文件不存在" ? "重新下载" : "重试"} ${task.title}`} title={task.status === "文件不存在" ? "重新下载" : "重试"}>↻</button>}
                     <button className="delete-button" onClick={() => deleteTask(task)} aria-label={`删除 ${task.title}`}>×</button>
                   </div>
                 </article>

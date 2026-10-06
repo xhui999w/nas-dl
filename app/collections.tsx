@@ -122,17 +122,20 @@ function CollectionGroup({ group, mode, filter, focus, onUpdate, onShare, onSave
     {(message || group.error) && <p className="collection-message" role="status">{message || group.error}</p>}
     {expanded && <div className="collection-details">
       {mode === "download" && canStart && <div className="collection-selection"><button type="button" onClick={() => setSelected((current) => { const next = new Set(current); selectable.forEach((entry) => next.add(entry.id)); return next; })}>选择本页</button><button type="button" onClick={() => setSelected(new Set())}>清空选择</button><span>已选择 {selected.size} 集</span><button className="collection-primary" type="button" disabled={busy || !selected.size} onClick={() => void control("start", [...selected])}>下载选中内容</button></div>}
-      {entries.map((entry) => <div className="collection-episode" key={entry.id}>
+      {entries.map((entry) => {
+        const missingFile = entry.status === "completed" && entry.file_available === false;
+        return <div className="collection-episode" key={entry.id}>
         <span className="collection-index">{mode === "download" && entry.status === "pending" && canStart ? <input type="checkbox" aria-label={`选择 ${entry.title}`} checked={selected.has(entry.id)} onChange={(event) => setSelected((current) => { const next = new Set(current); if (event.target.checked) next.add(entry.id); else next.delete(entry.id); return next; })} /> : entry.collection_index}</span>
-        <div className="collection-episode-main"><h4>{entry.collection_index}. {entry.title}</h4><p>{entry.error || [entry.speed, entry.eta ? `剩余 ${entry.eta}` : ""].filter(Boolean).join(" · ") || labels[entry.status]}</p>{entry.status === "running" && <div className="progress"><i style={{ width: `${entry.progress}%` }} /></div>}</div>
-        <span className={`collection-episode-status ${entry.status}`}>{entry.status === "running" ? `${entry.progress}%` : labels[entry.status]}</span>
+        <div className="collection-episode-main"><h4>{entry.collection_index}. {entry.title}</h4><p>{missingFile ? "文件已删除或移走，可重新下载" : entry.error || [entry.speed, entry.eta ? `剩余 ${entry.eta}` : ""].filter(Boolean).join(" · ") || labels[entry.status]}</p>{entry.status === "running" && <div className="progress"><i style={{ width: `${entry.progress}%` }} /></div>}</div>
+        <span className={`collection-episode-status ${missingFile ? "missing" : entry.status}`}>{missingFile ? "文件不存在" : entry.status === "running" ? `${entry.progress}%` : labels[entry.status]}</span>
         <div className="history-actions">
           {entry.status === "completed" && entry.media_available && <><Link className="media-play" href={`/media/play/${encodeURIComponent(entry.id)}`} prefetch={false} aria-label={`播放 ${entry.title}`} title="播放">▶</Link><button type="button" className="media-share" onClick={() => onShare(entry)} aria-label={`分享 ${entry.title}`} title="分享">↗</button></>}
-          {entry.status === "completed" && <a className="device-download" href={`/nas-api/api/tasks/${encodeURIComponent(entry.id)}/file`} download onClick={(event) => onSave(event, entry)} aria-label={`保存 ${entry.title} 到当前设备`} title="保存到此设备">⇩</a>}
-          {["failed", "cancelled"].includes(entry.status) && <button type="button" disabled={busy} onClick={() => void episodeAction(entry, "retry")} aria-label={`重试 ${entry.title}`} title="重试">↻</button>}
+          {entry.status === "completed" && !missingFile && <a className="device-download" href={`/nas-api/api/tasks/${encodeURIComponent(entry.id)}/file`} download onClick={(event) => onSave(event, entry)} aria-label={`保存 ${entry.title} 到当前设备`} title="保存到此设备">⇩</a>}
+          {(["failed", "cancelled"].includes(entry.status) || missingFile) && <button type="button" disabled={busy} onClick={() => void episodeAction(entry, "retry")} aria-label={`${missingFile ? "重新下载" : "重试"} ${entry.title}`} title={missingFile ? "重新下载" : "重试"}>↻</button>}
           {["queued", "running"].includes(entry.status) && <button type="button" disabled={busy} onClick={() => void episodeAction(entry, "cancel")} aria-label={`取消 ${entry.title}`} title="取消">×</button>}
         </div>
-      </div>)}
+      </div>;
+      })}
       {!entries.length && <p className="collection-empty">{group.state === "resolving" ? "正在读取合集目录，读取完成后可以选择下载。" : currentData ? "当前筛选条件下没有视频。" : "正在读取明细…"}</p>}
       <div className="collection-pagination"><button type="button" disabled={page <= 1} onClick={() => setPage((value) => value - 1)}>上一页</button><span>第 {page} / {totalPages} 页 · {currentData?.total || 0} 集</span><button type="button" disabled={!currentData || page >= totalPages} onClick={() => setPage((value) => value + 1)}>下一页</button></div>
     </div>}

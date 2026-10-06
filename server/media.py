@@ -28,6 +28,14 @@ def resolve_task_file(status: str, output_path: str | None, root: Path) -> Path:
     return candidate
 
 
+def file_available(status: str, output_path: str | None, root: Path) -> bool:
+    try:
+        resolve_task_file(status, output_path, root)
+        return True
+    except HTTPException:
+        return False
+
+
 def video_available(status: str, output_path: str | None, root: Path) -> bool:
     try:
         return resolve_task_file(status, output_path, root).suffix.lower() in VIDEO_EXTENSIONS
