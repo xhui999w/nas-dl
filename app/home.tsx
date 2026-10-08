@@ -806,7 +806,7 @@ export default function Home({ username }: { username: string }) {
         {activeNav === "overview" && <><section className="capture-card">
           <div className="capture-copy"><span className="spark">✦</span><div><h2>把喜欢的内容，带回家。</h2><p>粘贴视频、图集或作品集链接；完成后可在媒体库保存到电脑或手机。</p></div></div>
           <form onSubmit={createTask}>
-            <label><span>↗</span><input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="粘贴链接或抖音分享文案..." aria-label="媒体链接" /></label>
+            <label><span>↗</span><input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="粘贴视频链接或分享文案…" aria-label="媒体链接" /></label>
             <button type="submit" disabled={submitting}>{submitting ? "正在读取…" : "开始下载"} <span>→</span></button>
           </form>
           <div className="capture-options">
@@ -953,7 +953,7 @@ export default function Home({ username }: { username: string }) {
                 <div className="cookie-table-head"><span>网站域名</span><span>Cookie 内容</span><span /></div>
                 {cookieRows.map((row) => (
                   <div className="cookie-row" key={row.id}>
-                    <input value={row.domain} onChange={(event) => updateCookieRow(row.id, "domain", event.target.value)} placeholder="例如 douyin.com" aria-label="网站域名" />
+                    <input value={row.domain} onChange={(event) => updateCookieRow(row.id, "domain", event.target.value)} placeholder="例如 youtube.com" aria-label="网站域名" />
                     <input type="password" value={row.cookie} onChange={(event) => updateCookieRow(row.id, "cookie", event.target.value)} placeholder="粘贴 Cookie 字符串" aria-label={`${row.domain || "网站"} Cookie`} />
                     <button onClick={() => removeCookieRow(row.id)} aria-label={`删除 ${row.domain || "Cookie 行"}`}>×</button>
                   </div>
