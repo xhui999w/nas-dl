@@ -31,6 +31,7 @@ from server.download_errors import classify_download_error
 from server.media import file_available, resolve_task_file, video_available, video_metadata, UNSUPPORTED_MESSAGE
 from server import auth
 from server.playlists import read_playlist, speed_bytes, youtube_playlist_url
+from server.douyin_notes import note_id
 
 DATA_DIR = Path(os.getenv("NASFLOW_DATA", "/data"))
 DOWNLOAD_DIR = Path(os.getenv("NASFLOW_DOWNLOADS", "/downloads"))
@@ -53,6 +54,8 @@ collection_lock = threading.RLock()
 catalog_jobs: set[str] = set()
 PLACEHOLDER_TITLE = "等待解析"
 COOKIE_HOST_ALIASES = {
+    "iesdouyin.com": "douyin.com",
+    "v.douyin.com": "douyin.com",
     "b23.tv": "bilibili.com",
     "youtu.be": "youtube.com",
     "vm.tiktok.com": "tiktok.com",
@@ -575,6 +578,13 @@ def build_command(task: Task) -> tuple[list[str], Path]:
     target.mkdir(parents=True, exist_ok=True)
     cookie_file = cookie_file_for_url(task.url)
     proxy = configured_proxy()
+    if task.engine == "yt-dlp" and note_id(task.url):
+        command = [sys.executable, "-m", "server.douyin_notes", "--url", task.url, "--target", str(target)]
+        if cookie_file:
+            command += ["--cookies", str(cookie_file)]
+        if proxy:
+            command += ["--proxy", proxy]
+        return command, target
     if task.engine == "gallery-dl":
         command = [sys.executable, "-m", "gallery_dl", "--dest", str(target), "--write-metadata"]
         if proxy:
@@ -690,7 +700,7 @@ def run_download(task_id: str) -> None:
         session.refresh(task)
     try:
         command, target = build_command(task)
-        update_task(task_id, speed=None, eta=None, error=None, error_type=None, output_path=str(target))
+        update_task(task_id, speed=None, eta=None, error=None, error_type=None, log_tail="", output_path=str(target))
         with process_lock:
             with Session(engine) as session:
                 current = session.get(Task, task_id)
