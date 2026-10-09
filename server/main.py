@@ -609,6 +609,16 @@ def build_command(task: Task) -> tuple[list[str], Path]:
         "1080p": "bv*[height<=1080]+ba/b[height<=1080]",
         "audio": "ba/b",
     }
+    host = (urlparse(task.url).hostname or "").lower()
+    if task.quality != "audio" and any(host == domain or host.endswith("." + domain)
+                                       for domain in ("douyin.com", "iesdouyin.com")):
+        # MP4 is a container: Douyin's best playback stream can still be HEVC.
+        # Prefer the source's direct H.264/AAC stream, then its download stream;
+        # keep the existing fallback when no compatible source is offered.
+        for quality in ("best", "4k", "1080p"):
+            height = {"4k": "[height<=2160]", "1080p": "[height<=1080]"}.get(quality, "")
+            compatible = f"b[ext=mp4][vcodec~='^(avc1|h264)'][acodec~='^(mp4a|aac)']{height}"
+            formats[quality] = f"{compatible}[format_id!^=download_addr]/{compatible}/{formats[quality]}"
     if task.collection_id and task.quality != "audio":
         height = {"4k": "[height<=2160]", "1080p": "[height<=1080]"}.get(task.quality, "")
         formats[task.quality] = f"bv[ext=mp4][vcodec^=avc1]{height}+ba[ext=m4a]/b[ext=mp4][vcodec^=avc1]{height}"

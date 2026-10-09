@@ -13,6 +13,35 @@ from server.main import Task, Setting, build_command, choose_engine, parse_progr
 
 
 class DownloadCommandTests(unittest.TestCase):
+    def video_selector(self, url, quality="best"):
+        with patch("server.main.cookie_file_for_url", return_value=None), patch("server.main.configured_proxy", return_value=None):
+            command, _ = build_command(Task(url=url, quality=quality))
+        return command[command.index("-f") + 1]
+
+    def test_douyin_prefers_direct_h264_over_higher_hevc_and_watermarked_video(self):
+        from yt_dlp import YoutubeDL
+        formats = [
+            {"format_id": "h264_540p", "ext": "mp4", "vcodec": "h264", "acodec": "aac", "height": 1024, "url": "https://example.com/direct"},
+            {"format_id": "download_addr-0", "ext": "mp4", "vcodec": "h264", "acodec": "aac", "height": 1280, "url": "https://example.com/watermarked"},
+            {"format_id": "hevc_720p", "ext": "mp4", "vcodec": "h265", "acodec": "aac", "height": 1280, "url": "https://example.com/hevc"},
+        ]
+        for url in ("https://v.douyin.com/example/", "https://www.douyin.com/video/123", "https://www.iesdouyin.com/share/video/123/"):
+            with self.subTest(url=url), YoutubeDL({"quiet": True}) as ydl:
+                selector = ydl.build_format_selector(self.video_selector(url))
+                selected = list(selector({"formats": formats, "has_merged_format": True, "incomplete_formats": False}))
+                self.assertEqual(selected[0]["format_id"], "h264_540p")
+                selected = list(selector({"formats": formats[1:], "has_merged_format": True, "incomplete_formats": False}))
+                self.assertEqual(selected[0]["format_id"], "download_addr-0")
+                selected = list(selector({"formats": formats[2:], "has_merged_format": True, "incomplete_formats": False}))
+                self.assertEqual(selected[0]["format_id"], "hevc_720p")
+
+    def test_douyin_preference_keeps_quality_limits_audio_and_other_sites(self):
+        for quality, height in (("4k", 2160), ("1080p", 1080)):
+            self.assertIn(f"[height<={height}]", self.video_selector("https://v.douyin.com/example/", quality))
+        self.assertEqual(self.video_selector("https://v.douyin.com/example/", "audio"), "ba/b")
+        for url in ("https://youtube.com/watch?v=test", "https://douyin.com.example.org/video/123"):
+            self.assertEqual(self.video_selector(url), "bv*+ba/b")
+
     def test_new_attempt_classifies_only_new_download_output(self) -> None:
         from sqlmodel import SQLModel, Session, create_engine
         from unittest.mock import MagicMock
