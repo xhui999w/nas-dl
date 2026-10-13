@@ -14,14 +14,38 @@ from curl_cffi import requests
 
 OFFICIAL_HOST = "www.douyin.com"
 CDN_DOMAINS = ("douyinpic.com", "byteimg.com", "ibytedtos.com", "pstatp.com")
+POST_HOSTS = {"douyin.com", OFFICIAL_HOST, "iesdouyin.com", "www.iesdouyin.com"}
 
 
 def note_id(url: str) -> str | None:
-    parsed = urlparse(url)
-    if parsed.scheme not in {"http", "https"} or parsed.hostname not in {"douyin.com", "www.douyin.com", "iesdouyin.com", "www.iesdouyin.com"}:
+    try:
+        parsed = urlparse(url)
+        valid = (parsed.scheme in {"http", "https"} and parsed.hostname in POST_HOSTS
+                 and not parsed.username and not parsed.password and parsed.port in {None, 80, 443})
+    except ValueError:
+        return None
+    if not valid:
         return None
     match = re.fullmatch(r"/(?:share/)?note/(\d{10,24})/?", parsed.path)
     return match.group(1) if match else None
+
+
+def redirected_note_url(source: str, logs: str) -> str | None:
+    """Reuse yt-dlp's resolved URL; no extra request for ordinary video links."""
+    if note_id(source):
+        return None  # A direct image-post failure must not be retried in a loop.
+    try:
+        parsed = urlparse(source)
+        if (parsed.scheme not in {"http", "https"} or parsed.hostname not in POST_HOSTS | {"v.douyin.com"}
+                or parsed.username or parsed.password or parsed.port not in {None, 80, 443}):
+            return None
+    except ValueError:
+        return None
+    for match in re.finditer(r"(?:^|\n)ERROR: Unsupported URL: (https?://[^\s]+)", logs):
+        candidate = match.group(1)
+        if note_id(candidate):
+            return candidate
+    return None
 
 
 def safe_name(value: str) -> str:

@@ -5,12 +5,25 @@ import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
-from server.douyin_notes import cookie_header, download_note, fetch_image, note_id, read_note, safe_name
+from server.douyin_notes import cookie_header, download_note, fetch_image, note_id, read_note, safe_name, redirected_note_url
 
 NOTE = "https://www.iesdouyin.com/share/note/7443830253836963126/"
 
 
 class DouyinNoteTests(unittest.TestCase):
+    def test_short_link_fallback_uses_only_official_image_post_errors(self):
+        source = "https://v.douyin.com/laK494_NAwE/"
+        destination = "https://www.douyin.com/note/7695389222304727027"
+        self.assertEqual(redirected_note_url(source, f"WARNING: fallback\nERROR: Unsupported URL: {destination}"), destination)
+        for candidate in ("https://evil.test/note/7695389222304727027",
+                          "https://www.douyin.com/video/7695389222304727027",
+                          "https://user:password@www.douyin.com/note/7695389222304727027",
+                          "https://www.douyin.com:8888/note/7695389222304727027"):
+            self.assertIsNone(redirected_note_url(source, f"ERROR: Unsupported URL: {candidate}"))
+        self.assertIsNone(redirected_note_url("https://evil.test/", f"ERROR: Unsupported URL: {destination}"))
+        self.assertIsNone(redirected_note_url(destination, f"ERROR: Unsupported URL: {destination}"))
+        self.assertIsNone(redirected_note_url(source, f"ERROR: Fresh cookies are needed {destination}"))
+
     def test_note_matches_only_official_post_urls(self):
         for url in (NOTE, "https://www.douyin.com/note/7443830253836963126?share=1"):
             self.assertEqual(note_id(url), "7443830253836963126")

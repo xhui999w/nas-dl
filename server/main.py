@@ -31,7 +31,7 @@ from server.download_errors import classify_download_error
 from server.media import file_available, resolve_task_file, video_available, video_metadata, UNSUPPORTED_MESSAGE
 from server import auth
 from server.playlists import read_playlist, speed_bytes, youtube_playlist_url
-from server.douyin_notes import note_id
+from server.douyin_notes import note_id, redirected_note_url
 
 DATA_DIR = Path(os.getenv("NASFLOW_DATA", "/data"))
 DOWNLOAD_DIR = Path(os.getenv("NASFLOW_DOWNLOADS", "/downloads"))
@@ -711,41 +711,53 @@ def run_download(task_id: str) -> None:
     try:
         command, target = build_command(task)
         update_task(task_id, speed=None, eta=None, error=None, error_type=None, log_tail="", output_path=str(target))
-        with process_lock:
+        for attempt in range(2):
+            with process_lock:
+                with Session(engine) as session:
+                    current = session.get(Task, task_id)
+                    if not current or current.status != "running":
+                        return
+                process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                           text=True, encoding="utf-8", errors="replace",
+                                           env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"})
+                processes[task_id] = process
+            assert process.stdout
+            for raw_line in process.stdout:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                append_log(task_id, line)
+                if line.startswith("__NASFLOW_TITLE__"):
+                    update_task(task_id, title=line.removeprefix("__NASFLOW_TITLE__").strip())
+                    continue
+                if line.startswith("__NASFLOW_FILE__"):
+                    update_task(task_id, output_path=line.removeprefix("__NASFLOW_FILE__").strip())
+                    continue
+                percent, speed, eta = parse_progress(line)
+                values: dict[str, object] = {}
+                if percent is not None:
+                    values["progress"] = max(0, min(percent, 100))
+                if speed:
+                    values["speed"] = speed
+                if eta:
+                    values["eta"] = eta
+                if line.startswith("[download] Destination:"):
+                    values["output_path"] = line.split(":", 1)[1].strip()
+                if values:
+                    update_task(task_id, **values)
+
+            code = process.wait()
+            if code == 0 or attempt != 0 or task.engine != "yt-dlp":
+                break
             with Session(engine) as session:
                 current = session.get(Task, task_id)
-                if not current or current.status != "running":
-                    return
-            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                       text=True, encoding="utf-8", errors="replace",
-                                       env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"})
-            processes[task_id] = process
-        assert process.stdout
-        for raw_line in process.stdout:
-            line = raw_line.strip()
-            if not line:
-                continue
-            append_log(task_id, line)
-            if line.startswith("__NASFLOW_TITLE__"):
-                update_task(task_id, title=line.removeprefix("__NASFLOW_TITLE__").strip())
-                continue
-            if line.startswith("__NASFLOW_FILE__"):
-                update_task(task_id, output_path=line.removeprefix("__NASFLOW_FILE__").strip())
-                continue
-            percent, speed, eta = parse_progress(line)
-            values: dict[str, object] = {}
-            if percent is not None:
-                values["progress"] = max(0, min(percent, 100))
-            if speed:
-                values["speed"] = speed
-            if eta:
-                values["eta"] = eta
-            if line.startswith("[download] Destination:"):
-                values["output_path"] = line.split(":", 1)[1].strip()
-            if values:
-                update_task(task_id, **values)
-
-        code = process.wait()
+                resolved_note = redirected_note_url(task.url, current.log_tail if current else "")
+            if not resolved_note:
+                break
+            # Keep the original short URL in the record. Switch only this worker
+            # to the image adapter, sharing the existing progress/cancel handling.
+            command, target = build_command(task.model_copy(update={"url": resolved_note}))
+            update_task(task_id, progress=0, speed=None, eta=None, log_tail="", output_path=str(target))
         if code == 0:
             if finish_running_task(task_id, status="completed", progress=100, speed=None, eta=None, error_type=None):
                 write_obsidian_note(task_id)

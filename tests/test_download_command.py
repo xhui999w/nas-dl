@@ -13,6 +13,64 @@ from server.main import Task, Setting, build_command, choose_engine, parse_progr
 
 
 class DownloadCommandTests(unittest.TestCase):
+    def test_short_image_post_switches_worker_without_changing_original_url(self):
+        self.run_short_note_fallback(second_code=0)
+
+    def test_short_image_post_failure_classifies_only_adapter_error(self):
+        self.run_short_note_fallback(second_code=1)
+
+    def test_cancel_between_short_link_and_image_adapter_does_not_restart(self):
+        self.run_short_note_fallback(second_code=0, cancel=True)
+
+    def run_short_note_fallback(self, second_code, cancel=False):
+        from sqlmodel import SQLModel, Session, create_engine
+        from unittest.mock import MagicMock
+        from server import main
+        database = create_engine("sqlite://")
+        SQLModel.metadata.create_all(database)
+        original = "https://v.douyin.com/laK494_NAwE/"
+        resolved = "https://www.douyin.com/note/7695389222304727027"
+        task = Task(url=original, status="queued")
+        with Session(database) as session:
+            session.add(task)
+            session.commit()
+            task_id = task.id
+        first, second = MagicMock(), MagicMock()
+        first.stdout = iter([f"ERROR: Unsupported URL: {resolved}\n"])
+        first.wait.return_value = 1
+        if cancel:
+            def stop_first():
+                main.update_task(task_id, status="cancelled")
+                return 1
+            first.wait.side_effect = stop_first
+        second.stdout = iter(["__NASFLOW_TITLE__创业思考\n", "__NASFLOW_FILE__/downloads/post.zip\n"] if second_code == 0
+                             else ["ERROR: Fresh cookies are needed\n"])
+        second.wait.return_value = second_code
+        try:
+            with patch.object(main, "engine", database), patch.object(main, "cookie_file_for_url", return_value=None), \
+                    patch.object(main, "configured_proxy", return_value=None), patch.object(main.subprocess, "Popen", side_effect=[first, second]) as popen:
+                main.run_download(task_id)
+                self.assertEqual(popen.call_count, 1 if cancel else 2)
+                if not cancel:
+                    fallback = popen.call_args_list[1].args[0]
+                    self.assertEqual(fallback[2], "server.douyin_notes")
+                    self.assertEqual(fallback[fallback.index("--url")+1], resolved)
+            with Session(database) as session:
+                result = session.get(Task, task_id)
+                self.assertEqual(result.url, original)
+                self.assertEqual(result.status, "cancelled" if cancel else "failed" if second_code else "completed")
+                if not cancel:
+                    self.assertNotIn("Unsupported URL", result.log_tail)
+                    if second_code:
+                        self.assertEqual(result.error_type, "COOKIE_REQUIRED")
+                    else:
+                        self.assertEqual(result.title, "创业思考")
+                        self.assertEqual(result.output_path, "/downloads/post.zip")
+                        self.assertEqual(result.progress, 100)
+            self.assertNotIn(task_id, main.processes)
+        finally:
+            database.dispose()
+
     def video_selector(self, url, quality="best"):
         with patch("server.main.cookie_file_for_url", return_value=None), patch("server.main.configured_proxy", return_value=None):
             command, _ = build_command(Task(url=url, quality=quality))
