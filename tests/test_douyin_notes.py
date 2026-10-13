@@ -35,8 +35,8 @@ class DouyinNoteTests(unittest.TestCase):
     def test_cookie_scope_and_official_request_do_not_follow_redirects(self):
         with tempfile.TemporaryDirectory() as folder:
             cookie_file = Path(folder) / "cookies.txt"
-            cookie_file.write_text("# Netscape HTTP Cookie File\n.douyin.com\tTRUE\t/\tTRUE\t2147483647\tallowed\ttest\n.example.com\tTRUE\t/\tTRUE\t2147483647\tunrelated\tprivate\n")
-            self.assertEqual(cookie_header(str(cookie_file)), "allowed=test")
+            cookie_file.write_text("# Netscape HTTP Cookie File\n.douyin.com\tTRUE\t/\tTRUE\t2147483647\tallowed\ttest\n.douyin.com\tTRUE\t/\tTRUE\t2147483647\tUIFID\ttest-request-id\n.example.com\tTRUE\t/\tTRUE\t2147483647\tunrelated\tprivate\n")
+            self.assertEqual(cookie_header(str(cookie_file)), "allowed=test; UIFID=test-request-id")
             with patch("server.douyin_notes.requests.get") as get:
                 response = get.return_value
                 response.status_code = 200
@@ -44,8 +44,9 @@ class DouyinNoteTests(unittest.TestCase):
                 response.json.return_value = {"aweme_detail": {"aweme_id": "7443830253836963126"}}
                 read_note("7443830253836963126", str(cookie_file), "http://proxy:7890")
                 self.assertFalse(get.call_args.kwargs["allow_redirects"])
-                self.assertEqual(get.call_args.kwargs["headers"]["Cookie"], "allowed=test")
+                self.assertEqual(get.call_args.kwargs["headers"]["Cookie"], "allowed=test; UIFID=test-request-id")
                 self.assertEqual(get.call_args.kwargs["params"]["aid"], "6383")
+                self.assertIn("x-secsdk-web-signature", get.call_args.kwargs["params"])
 
     def test_cdn_fetch_sends_no_login_cookie_and_rejects_fake_image(self):
         with patch("server.douyin_notes.requests.get") as get:

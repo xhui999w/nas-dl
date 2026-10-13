@@ -631,6 +631,8 @@ def build_command(task: Task) -> tuple[list[str], Path]:
         "-o", f"infojson:{infojson_template}",
         "-f", formats.get(task.quality, formats["best"]),
     ]
+    if any(host == domain or host.endswith("." + domain) for domain in ("douyin.com", "iesdouyin.com")):
+        command += ["--plugin-dirs", str(Path(__file__).resolve().parent / "plugins")]
     if task.collection_id:
         command += ["--no-playlist", "--merge-output-format", "mp4"]
     elif task.subscription_id:

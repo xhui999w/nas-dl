@@ -21,6 +21,10 @@ ERROR_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
 def classify_download_error(message: str) -> str:
     """Map downloader output to a stable, user-facing machine status."""
     normalized = re.sub(r"\s+", " ", message).lower()
+    if "failed to download web detail json" in normalized and "http error 403" in normalized:
+        # Douyin currently emits "Fresh cookies" after a denied detail request,
+        # even when cookies were supplied. Report the actual HTTP denial first.
+        return "BLOCKED"
     for error_type, needles in ERROR_PATTERNS:
         if any(needle in normalized for needle in needles):
             return error_type

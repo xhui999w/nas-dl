@@ -11,6 +11,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from curl_cffi import requests
+from server.douyin_signing import signed_detail_query
 
 OFFICIAL_HOST = "www.douyin.com"
 CDN_DOMAINS = ("douyinpic.com", "byteimg.com", "ibytedtos.com", "pstatp.com")
@@ -54,29 +55,48 @@ def safe_name(value: str) -> str:
     return value.encode("utf-8")[:160].decode("utf-8", errors="ignore").strip(" .") or "图文作品"
 
 
-def cookie_header(cookie_file: str | None) -> str:
+def cookie_values(cookie_file: str | None) -> dict[str, str]:
     if not cookie_file:
-        return ""
+        return {}
     jar = http.cookiejar.MozillaCookieJar(cookie_file)
     jar.load(ignore_discard=True)
-    return "; ".join(f"{cookie.name}={cookie.value}" for cookie in jar
-                     if cookie.domain.lstrip(".") in {"douyin.com", OFFICIAL_HOST} and not cookie.is_expired())
+    return {cookie.name: cookie.value for cookie in jar
+            if cookie.domain.lstrip(".") in {"douyin.com", OFFICIAL_HOST} and not cookie.is_expired()}
+
+
+def cookie_header(cookie_file: str | None) -> str:
+    return "; ".join(f"{name}={value}" for name, value in cookie_values(cookie_file).items())
 
 
 def read_note(post_id: str, cookie_file: str | None, proxy: str | None) -> dict:
     headers = {"Referer": f"https://{OFFICIAL_HOST}/note/{post_id}"}
-    cookie = cookie_header(cookie_file)
+    cookies = cookie_values(cookie_file)
+    cookie = "; ".join(f"{name}={value}" for name, value in cookies.items())
     if cookie:
         headers["Cookie"] = cookie
+    uifid = cookies.get("UIFID") or cookies.get("UIFID_TEMP")
+    if not uifid:
+        # A public first visit can set an anonymous request identifier. Login
+        # credentials remain scoped to this fixed official host, without redirects.
+        response = requests.get(f"https://{OFFICIAL_HOST}/", headers=headers, proxy=proxy,
+                                impersonate="chrome", timeout=25, allow_redirects=False)
+        try:
+            uifid = response.cookies.get("UIFID_TEMP") or response.cookies.get("UIFID")
+            if uifid:
+                cookies["UIFID_TEMP"] = uifid
+                headers["Cookie"] = "; ".join(f"{name}={value}" for name, value in cookies.items())
+        finally:
+            response.close()
+    query = signed_detail_query({"aweme_id": post_id, "aid": "6383", "device_platform": "webapp",
+                                 "version_code": "190600", "pc_client_type": "1"}, uifid or "")
     # Never follow a redirect while carrying a configured login credential.
     response = requests.get(f"https://{OFFICIAL_HOST}/aweme/v1/web/aweme/detail/",
-                      params={"aweme_id": post_id, "aid": "6383", "device_platform": "webapp",
-                              "version_code": "190600", "pc_client_type": "1"},
+                      params=query,
                       headers=headers, proxy=proxy, impersonate="chrome", timeout=25,
                       allow_redirects=False)
     try:
         if response.status_code in {403, 429}:
-            raise ValueError("网站风控拦截（HTTP Error 403/429），请稍后重试")
+            raise ValueError(f"网站风控拦截（HTTP Error {response.status_code}），请稍后重试")
         if response.status_code != 200 or not response.content.strip():
             raise ValueError("Fresh cookies are needed：网站未返回作品信息，请更新网站 Cookie 后重试")
         try:

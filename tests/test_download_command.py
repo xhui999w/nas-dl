@@ -13,6 +13,16 @@ from server.main import Task, Setting, build_command, choose_engine, parse_progr
 
 
 class DownloadCommandTests(unittest.TestCase):
+    def test_signature_plugin_is_enabled_only_for_douyin_commands(self):
+        for url in ("https://v.douyin.com/KCtBAQCQTyk/", "https://www.iesdouyin.com/share/video/7670754081590360226/"):
+            with patch("server.main.cookie_file_for_url", return_value=None), patch("server.main.configured_proxy", return_value=None):
+                command, _ = build_command(Task(url=url))
+            self.assertIn("--plugin-dirs", command)
+            self.assertTrue(Path(command[command.index("--plugin-dirs") + 1]).is_dir())
+        with patch("server.main.cookie_file_for_url", return_value=None), patch("server.main.configured_proxy", return_value=None):
+            command, _ = build_command(Task(url="https://youtube.com/watch?v=test"))
+        self.assertNotIn("--plugin-dirs", command)
+
     def test_short_image_post_switches_worker_without_changing_original_url(self):
         self.run_short_note_fallback(second_code=0)
 

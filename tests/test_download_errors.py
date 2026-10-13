@@ -4,6 +4,9 @@ from server.download_errors import classify_download_error
 
 
 class DownloadErrorClassificationTests(unittest.TestCase):
+    def test_denied_detail_request_is_not_misreported_as_expired_cookies(self):
+        self.assertEqual(classify_download_error("WARNING: [Douyin] Failed to download web detail JSON: HTTP Error 403: Forbidden\nERROR: Fresh cookies are needed"), "BLOCKED")
+
     def test_known_error_classes(self) -> None:
         cases = {
             "Fresh cookies (not necessarily logged in) are needed": "COOKIE_REQUIRED",
