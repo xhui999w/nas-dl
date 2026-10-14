@@ -13,6 +13,30 @@ from server.main import Task, Setting, build_command, choose_engine, parse_progr
 
 
 class DownloadCommandTests(unittest.TestCase):
+    def test_long_chinese_and_emoji_names_fit_filesystem_and_keep_full_metadata_title(self):
+        from yt_dlp import YoutubeDL
+        title = "想改变身体状态？想瘦身塑形？想提升身体素质？💪" * 20
+        uploader = "阳哥在运动💪" * 30
+        task = Task(url="https://m.toutiao.com/is/test/")
+        with patch("server.main.cookie_file_for_url", return_value=None), patch("server.main.configured_proxy", return_value=None):
+            command, _ = build_command(task)
+        templates = [command[i+1] for i, value in enumerate(command) if value == "-o"]
+        info = {"title": title, "uploader": uploader, "id": "7696090017688453120", "ext": "mp4"}
+        with YoutubeDL({"quiet": True, "outtmpl": {"default": templates[0], "infojson": templates[1].removeprefix("infojson:")}}) as ydl:
+            media = Path(ydl.prepare_filename(info))
+            sidecar = Path(ydl.prepare_filename(info, "infojson"))
+        self.assertEqual(media.parent, sidecar.parent)
+        self.assertLessEqual(len(media.parent.name.encode("utf-8")), 120)
+        self.assertIn("[7696090017688453120]", media.name)
+        for filename in (media.name, media.with_suffix(".jpeg").name, media.stem + ".f137.mp4.part"):
+            self.assertLessEqual(len(filename.encode("utf-8")), 255)
+        self.assertEqual(info["title"], title)
+        self.assertIn("before_dl:__NASFLOW_TITLE__%(title)s", command)
+        media.parent.mkdir(parents=True, exist_ok=True)
+        media.with_suffix(".jpeg").write_bytes(b"thumbnail")
+        sidecar.write_text(json.dumps(info, ensure_ascii=False), encoding="utf-8")
+        self.assertEqual(json.loads(sidecar.read_text(encoding="utf-8"))["title"], title)
+
     def test_signature_plugin_is_enabled_only_for_douyin_commands(self):
         for url in ("https://v.douyin.com/KCtBAQCQTyk/", "https://www.iesdouyin.com/share/video/7670754081590360226/"):
             with patch("server.main.cookie_file_for_url", return_value=None), patch("server.main.configured_proxy", return_value=None):

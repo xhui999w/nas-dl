@@ -175,7 +175,7 @@ class CollectionTests(unittest.TestCase):
         self.assertIn("--no-playlist", command)
         self.assertIn("--merge-output-format", command)
         self.assertIn("avc1", command[command.index("-f") + 1])
-        self.assertTrue(command[command.index("-o") + 1].endswith("0004 - %(title)s [%(id)s].%(ext)s"))
+        self.assertTrue(command[command.index("-o") + 1].endswith("0004 - %(title).180B [%(id)s].%(ext)s"))
 
     def test_catalog_error_and_cancel_do_not_start_downloads(self):
         created = self.client.post("/api/collections", json={"url": "https://youtube.com/playlist?list=PL_TEST_COLLECTION"}).json()

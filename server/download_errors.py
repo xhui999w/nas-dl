@@ -14,7 +14,7 @@ ERROR_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("VIDEO_UNAVAILABLE", ("video unavailable", "this video has been removed", "private video", "video is no longer available", "tweet unavailable")),
     ("UNSUPPORTED", ("unsupported url", "no suitable extractor", "no extractor")),
     ("PARSE_ERROR", ("unable to extract", "failed to parse", "cannot parse data", "can't find any video", "no video formats found", "requested format is not available", "unable to download api page")),
-    ("DOWNLOADER_ERROR", ("fixed output name but more than one file", "traceback (most recent call last)", "nonetype' object has no attribute")),
+    ("DOWNLOADER_ERROR", ("fixed output name but more than one file", "file name too long", "traceback (most recent call last)", "nonetype' object has no attribute")),
 )
 
 

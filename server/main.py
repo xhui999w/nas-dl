@@ -598,10 +598,13 @@ def build_command(task: Task) -> tuple[list[str], Path]:
         command.append(task.url)
         return command, target
 
-    template = str(target / "%(uploader|未知作者)s/%(title)s [%(id)s].%(ext)s")
-    infojson_template = str(target / "%(uploader|未知作者)s/%(id)s.info.json")
+    # Byte precision keeps Chinese/emoji filenames below NAS NAME_MAX, with
+    # room for IDs, thumbnail extensions and downloader temporary suffixes.
+    # The database title, print marker and info JSON retain the complete title.
+    template = str(target / "%(uploader|未知作者).120B/%(title).180B [%(id)s].%(ext)s")
+    infojson_template = str(target / "%(uploader|未知作者).120B/%(id)s.info.json")
     if task.collection_id:
-        template = str(target / f"{task.collection_index or 0:04d} - %(title)s [%(id)s].%(ext)s")
+        template = str(target / f"{task.collection_index or 0:04d} - %(title).180B [%(id)s].%(ext)s")
         infojson_template = str(target / "%(id)s.info.json")
     formats = {
         "best": "bv*+ba/b",

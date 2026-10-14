@@ -18,6 +18,7 @@ class DownloadErrorClassificationTests(unittest.TestCase):
             "ERROR: Unsupported URL": "UNSUPPORTED",
             "No video formats found": "PARSE_ERROR",
             "Fixed output name but more than one file to download": "DOWNLOADER_ERROR",
+            "[Errno 36] File name too long": "DOWNLOADER_ERROR",
         }
         for message, expected in cases.items():
             with self.subTest(message=message):
