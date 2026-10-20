@@ -5,6 +5,7 @@ import Link from "next/link";
 import { AccountSecurity, LogoutButton } from "./account-controls";
 import "./auth-ui.css";
 import { CollectionGroups, collectionMatches, type Collection } from "./collections";
+import { writeDeviceFile, type SaveFileHandle, type SaveProgress } from "./device-save";
 
 type Task = {
   id: number | string;
@@ -82,10 +83,6 @@ type Subscription = {
 type SubscriptionEntry = { id: string; title: string; url: string; duration?: number | null; thumbnail?: string | null };
 
 type CookieRow = { id: number; domain: string; cookie: string };
-
-type SaveFileHandle = {
-  createWritable: () => Promise<WritableStream<Uint8Array>>;
-};
 
 type SavePickerWindow = Window & {
   showSaveFilePicker?: (options: { suggestedName: string }) => Promise<SaveFileHandle>;
@@ -220,6 +217,8 @@ export default function Home({ username }: { username: string }) {
   const [submitting, setSubmitting] = useState(false);
   const [quality, setQuality] = useState("自动选择最佳画质");
   const [notice, setNotice] = useState("");
+  const [deviceSave, setDeviceSave] = useState<SaveProgress & { title: string; url: string; phase: "saving" | "saved" | "error"; message: string } | null>(null);
+  const deviceSaveBusy = useRef(false);
   const [connected, setConnected] = useState(false);
   const [storage, setStorage] = useState<StorageInfo | null>(null);
   const [activeNav, setActiveNav] = useState("overview");
@@ -276,19 +275,25 @@ export default function Home({ username }: { username: string }) {
     if (!picker) return;
 
     event.preventDefault();
+    if (deviceSaveBusy.current) return;
+    deviceSaveBusy.current = true;
     const outputName = task.outputPath?.split(/[\\/]/).pop();
     const suggestedName = (outputName || `${task.title}.mp4`).replace(/[<>:"/\\|?*]/g, "_");
+    let fileSelected = false;
     try {
       const handle = await picker.call(window, { suggestedName });
-      setNotice("正在保存到所选文件夹，请保持页面打开");
-      const response = await fetch(taskFileUrl(task));
-      if (!response.ok || !response.body) throw new Error("download failed");
-      const writable = await handle.createWritable();
-      await response.body.pipeTo(writable);
-      setNotice("文件已保存到当前设备");
+      fileSelected = true;
+      setDeviceSave({ title: task.title, url: taskFileUrl(task), phase: "saving", message: "正在连接，请保持页面打开；传输完成前文件可能显示为 0 字节", received: 0, total: null });
+      const response = await fetch(taskFileUrl(task), { cache: "no-store" });
+      const size = await writeDeviceFile(response, handle, (progress) => {
+        setDeviceSave({ title: task.title, url: taskFileUrl(task), phase: "saving", message: "正在保存，请保持页面打开；传输完成前文件可能显示为 0 字节", ...progress });
+      });
+      setDeviceSave({ title: task.title, url: taskFileUrl(task), phase: "saved", message: "文件已完整保存，可以打开播放或查看", received: size, total: size });
     } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") return;
-      setNotice("保存失败，请重新点击“保存到此设备”");
+      if (!fileSelected && error instanceof DOMException && error.name === "AbortError") return;
+      setDeviceSave({ title: task.title, url: taskFileUrl(task), phase: "error", message: "保存未完成，请重新点击保存，或改用浏览器下载。若已出现 0 字节文件，请删除后重试。", received: 0, total: null });
+    } finally {
+      deviceSaveBusy.current = false;
     }
   }
 
@@ -802,6 +807,14 @@ export default function Home({ username }: { username: string }) {
           <div><h1>{{ overview: "下载中心", library: "媒体库", subscriptions: "订阅中心", cookies: "账号与 Cookies", notifications: "通知推送", settings: "系统设置" }[activeNav] || "NASFlow"}</h1><p>{{ overview: "添加链接、查看进度并管理最近下载。", library: "管理已经完成、失败或取消的任务记录。", subscriptions: "统一管理平台、订阅源和同步状态。", cookies: "按网站独立管理登录凭据。", notifications: "集中配置任务和订阅消息提醒。", settings: "调整下载服务与系统偏好。" }[activeNav]}</p></div>
           <div className="header-actions"><button aria-label="查看通知">♢<i /></button><span className="avatar">{username.slice(0, 1).toUpperCase()}</span><LogoutButton /></div>
         </header>
+
+        {deviceSave && <aside className={`device-save-status ${deviceSave.phase}`} aria-label="保存到设备进度">
+          <div role="status" aria-live="polite"><strong>{deviceSave.phase === "saving" ? "正在保存到此设备" : deviceSave.phase === "saved" ? "保存完成" : "保存失败"}</strong><span className="device-save-title" title={deviceSave.title}>{deviceSave.title}</span><p>{deviceSave.message}</p></div>
+          {deviceSave.phase === "saving" && <progress aria-label="文件传输进度" max={deviceSave.total || 1} value={deviceSave.total ? deviceSave.received : undefined} />}
+          {deviceSave.phase !== "error" && <small>{deviceSave.received ? formatBytes(deviceSave.received) : "0 B"}{deviceSave.total !== null ? ` / ${formatBytes(deviceSave.total)}` : ""}</small>}
+          {deviceSave.phase === "error" && <a href={deviceSave.url} download>改用浏览器下载 ⇩</a>}
+          {deviceSave.phase !== "saving" && <button type="button" onClick={() => setDeviceSave(null)} aria-label="关闭保存提示">×</button>}
+        </aside>}
 
         {activeNav === "overview" && <><section className="capture-card">
           <div className="capture-copy"><span className="spark">✦</span><div><h2>把喜欢的内容，带回家。</h2><p>粘贴视频、图集或作品集链接；完成后可在媒体库保存到电脑或手机。</p></div></div>
