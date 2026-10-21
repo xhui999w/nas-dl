@@ -434,7 +434,8 @@ footer a { color: var(--purple); }
 .device-save-status progress { display: block; width: 100%; height: 8px; accent-color: #6653e8; margin: 10px 0; }
 .device-save-status small { color: var(--muted); }
 .device-save-status a { display: inline-block; margin-top: 5px; color: #6653e8; font-size: 13px; }
-.device-save-status button { position: absolute; top: 10px; right: 10px; border: 0; background: none; color: var(--muted); font-size: 20px; cursor: pointer; }
+.device-save-status .device-save-close { position: absolute; top: 10px; right: 10px; border: 0; background: none; color: var(--muted); font-size: 20px; cursor: pointer; }
+.device-save-status .device-save-folder { margin-top: 5px; padding: 7px 10px; border: 0; border-radius: 8px; background: var(--soft-purple); color: var(--purple); font-size: 12px; }
 .device-save-status.error { border-color: #f0c2c9; }
 .device-save-status.error strong { color: #cc4259; }
 .device-save-status.saved strong { color: #249965; }

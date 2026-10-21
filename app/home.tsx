@@ -217,8 +217,10 @@ export default function Home({ username }: { username: string }) {
   const [submitting, setSubmitting] = useState(false);
   const [quality, setQuality] = useState("自动选择最佳画质");
   const [notice, setNotice] = useState("");
-  const [deviceSave, setDeviceSave] = useState<SaveProgress & { title: string; url: string; phase: "saving" | "saved" | "error"; message: string } | null>(null);
+  const [deviceSave, setDeviceSave] = useState<SaveProgress & { title: string; url: string; phase: "browser" | "choosing" | "saving" | "saved" | "error"; message: string; folderTask?: Task } | null>(null);
   const deviceSaveBusy = useRef(false);
+  const deviceSaveAttempt = useRef(0);
+  const deviceSaveController = useRef<AbortController | null>(null);
   const [connected, setConnected] = useState(false);
   const [storage, setStorage] = useState<StorageInfo | null>(null);
   const [activeNav, setActiveNav] = useState("overview");
@@ -270,30 +272,53 @@ export default function Home({ username }: { username: string }) {
     return `${API_BASE}/api/tasks/${encodeURIComponent(String(task.id))}/file`;
   }
 
-  async function saveTaskToDevice(event: ReactMouseEvent<HTMLAnchorElement>, task: Task) {
+  function beginBrowserDownload(title: string, url: string, folderTask?: Task) {
+    deviceSaveAttempt.current += 1;
+    deviceSaveController.current?.abort();
+    deviceSaveBusy.current = false;
+    setDeviceSave({ title, url, phase: "browser", message: "请在浏览器的下载列表查看进度。保存位置由浏览器设置决定。", received: 0, total: null,
+      folderTask: typeof (window as SavePickerWindow).showSaveFilePicker === "function" && window.isSecureContext ? folderTask : undefined });
+  }
+
+  function saveTaskToDevice(_event: ReactMouseEvent<HTMLAnchorElement>, task: Task) {
+    // Keep the actual link click native: no file-picker permission or waiting
+    // promise may prevent the browser's download manager from receiving it.
+    beginBrowserDownload(task.title, taskFileUrl(task), task);
+  }
+
+  async function saveTaskToFolder(task: Task) {
     const picker = (window as SavePickerWindow).showSaveFilePicker;
     if (!picker) return;
-
-    event.preventDefault();
     if (deviceSaveBusy.current) return;
     deviceSaveBusy.current = true;
+    const attempt = ++deviceSaveAttempt.current;
+    const controller = new AbortController();
+    deviceSaveController.current = controller;
     const outputName = task.outputPath?.split(/[\\/]/).pop();
     const suggestedName = (outputName || `${task.title}.mp4`).replace(/[<>:"/\\|?*]/g, "_");
     let fileSelected = false;
+    setDeviceSave({ title: task.title, url: taskFileUrl(task), phase: "choosing", message: "请在浏览器窗口中选择保存位置；若没有弹出窗口，可以直接下载。", received: 0, total: null });
     try {
       const handle = await picker.call(window, { suggestedName });
+      if (attempt !== deviceSaveAttempt.current) return;
       fileSelected = true;
       setDeviceSave({ title: task.title, url: taskFileUrl(task), phase: "saving", message: "正在连接，请保持页面打开；传输完成前文件可能显示为 0 字节", received: 0, total: null });
-      const response = await fetch(taskFileUrl(task), { cache: "no-store" });
+      const response = await fetch(taskFileUrl(task), { cache: "no-store", signal: controller.signal });
       const size = await writeDeviceFile(response, handle, (progress) => {
+        if (attempt !== deviceSaveAttempt.current) return;
         setDeviceSave({ title: task.title, url: taskFileUrl(task), phase: "saving", message: "正在保存，请保持页面打开；传输完成前文件可能显示为 0 字节", ...progress });
       });
+      if (attempt !== deviceSaveAttempt.current) return;
       setDeviceSave({ title: task.title, url: taskFileUrl(task), phase: "saved", message: "文件已完整保存，可以打开播放或查看", received: size, total: size });
     } catch (error) {
-      if (!fileSelected && error instanceof DOMException && error.name === "AbortError") return;
+      if (attempt !== deviceSaveAttempt.current) return;
+      if (!fileSelected && error instanceof DOMException && error.name === "AbortError") { setDeviceSave(null); return; }
       setDeviceSave({ title: task.title, url: taskFileUrl(task), phase: "error", message: "保存未完成，请重新点击保存，或改用浏览器下载。若已出现 0 字节文件，请删除后重试。", received: 0, total: null });
     } finally {
-      deviceSaveBusy.current = false;
+      if (attempt === deviceSaveAttempt.current) {
+        deviceSaveBusy.current = false;
+        deviceSaveController.current = null;
+      }
     }
   }
 
@@ -809,11 +834,12 @@ export default function Home({ username }: { username: string }) {
         </header>
 
         {deviceSave && <aside className={`device-save-status ${deviceSave.phase}`} aria-label="保存到设备进度">
-          <div role="status" aria-live="polite"><strong>{deviceSave.phase === "saving" ? "正在保存到此设备" : deviceSave.phase === "saved" ? "保存完成" : "保存失败"}</strong><span className="device-save-title" title={deviceSave.title}>{deviceSave.title}</span><p>{deviceSave.message}</p></div>
+          <div role="status" aria-live="polite"><strong>{deviceSave.phase === "browser" ? "已交给浏览器下载" : deviceSave.phase === "choosing" ? "等待选择保存位置" : deviceSave.phase === "saving" ? "正在保存到此设备" : deviceSave.phase === "saved" ? "保存完成" : "保存失败"}</strong><span className="device-save-title" title={deviceSave.title}>{deviceSave.title}</span><p>{deviceSave.message}</p></div>
           {deviceSave.phase === "saving" && <progress aria-label="文件传输进度" max={deviceSave.total || 1} value={deviceSave.total ? deviceSave.received : undefined} />}
-          {deviceSave.phase !== "error" && <small>{deviceSave.received ? formatBytes(deviceSave.received) : "0 B"}{deviceSave.total !== null ? ` / ${formatBytes(deviceSave.total)}` : ""}</small>}
-          {deviceSave.phase === "error" && <a href={deviceSave.url} download>改用浏览器下载 ⇩</a>}
-          {deviceSave.phase !== "saving" && <button type="button" onClick={() => setDeviceSave(null)} aria-label="关闭保存提示">×</button>}
+          {(deviceSave.phase === "saving" || deviceSave.phase === "saved") && <small>{deviceSave.received ? formatBytes(deviceSave.received) : "0 B"}{deviceSave.total !== null ? ` / ${formatBytes(deviceSave.total)}` : ""}</small>}
+          {deviceSave.phase === "browser" && deviceSave.folderTask && <button className="device-save-folder" type="button" onClick={() => { if (deviceSave.folderTask) void saveTaskToFolder(deviceSave.folderTask); }}>选择保存位置另存一份</button>}
+          {(deviceSave.phase === "error" || deviceSave.phase === "choosing") && <a href={deviceSave.url} download onClick={() => beginBrowserDownload(deviceSave.title, deviceSave.url)}>直接下载 ⇩</a>}
+          {deviceSave.phase !== "saving" && deviceSave.phase !== "choosing" && <button className="device-save-close" type="button" onClick={() => setDeviceSave(null)} aria-label="关闭保存提示">×</button>}
         </aside>}
 
         {activeNav === "overview" && <><section className="capture-card">
