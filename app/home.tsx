@@ -6,6 +6,7 @@ import { AccountSecurity, LogoutButton } from "./account-controls";
 import "./auth-ui.css";
 import { CollectionGroups, collectionMatches, type Collection } from "./collections";
 import { writeDeviceFile, type SaveFileHandle, type SaveProgress } from "./device-save";
+import { TaskDate } from "./task-date";
 
 type Task = {
   id: number | string;
@@ -23,6 +24,7 @@ type Task = {
   obsidianError?: string;
   outputPath?: string;
   mediaAvailable?: boolean;
+  createdAt?: string;
 };
 
 type MediaShare = { id: string; max_plays: number; play_count: number; byte_limit: number; transferred_bytes: number; remaining_bytes: number; revoked: boolean; created_at: string; token?: string };
@@ -58,6 +60,7 @@ export type ApiTask = {
   media_available?: boolean;
   file_available?: boolean;
   collection_index?: number;
+  created_at?: string;
 };
 
 type StorageInfo = {
@@ -188,6 +191,7 @@ function fromApiTask(item: ApiTask): Task {
     obsidianError: item.obsidian_error,
     outputPath: item.output_path,
     mediaAvailable: item.media_available,
+    createdAt: item.created_at,
   };
 }
 
@@ -870,7 +874,7 @@ export default function Home({ username }: { username: string }) {
                 <article className="task" key={task.id}>
                   <SourceMark tone={task.tone} label={task.source} />
                   <div className="task-main">
-                    <div className="task-top"><div><h4>{task.title}</h4><p>{task.source}</p></div><strong className={task.status === "排队中" ? "queued" : task.status === "失败" ? "failed" : ""}>{task.status === "排队中" || task.status === "失败" || task.status === "已取消" ? task.status : `${task.progress}%`}</strong></div>
+                    <div className="task-top"><div><h4>{task.title}</h4><p>{task.source}</p><TaskDate value={task.createdAt} /></div><strong className={task.status === "排队中" ? "queued" : task.status === "失败" ? "failed" : ""}>{task.status === "排队中" || task.status === "失败" || task.status === "已取消" ? task.status : `${task.progress}%`}</strong></div>
                     <div className="progress"><i style={{ width: `${task.progress || 3}%` }} /></div>
                     <div className="task-details"><span>{task.speed || (task.status === "排队中" ? "等待空闲任务槽" : task.meta)}</span><span>{task.eta ? `剩余 ${task.eta}` : task.status}</span></div>
                   </div>
@@ -897,7 +901,7 @@ export default function Home({ username }: { username: string }) {
               {filteredHistoryTasks.map((task, index) => (
                 <article key={task.id}>
                   <span className={`finished-cover cover-${index % 3 + 1}`}>{task.source.slice(0, 1)}</span>
-                  <div><h4>{task.title}</h4><p>{task.source} · {task.meta}</p></div>
+                  <div><h4>{task.title}</h4><p>{task.source} · {task.meta}</p><TaskDate value={task.createdAt} /></div>
                   <time className={`history-status ${task.status === "文件不存在" ? "missing" : task.backendStatus || ""}`}>{task.status}</time>
                   <div className="history-actions">
                     {task.status === "已完成" && task.mediaAvailable && typeof task.id === "string" && <Link className="media-play" href={`/media/play/${encodeURIComponent(task.id)}`} prefetch={false} aria-label={`播放 ${task.title}`} title="播放"><span aria-hidden="true">▶</span></Link>}

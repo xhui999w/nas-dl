@@ -4,11 +4,13 @@ import { useEffect, useState, type MouseEvent } from "react";
 import Link from "next/link";
 import type { ApiTask } from "./home";
 import "./collections.css";
+import { TaskDate } from "./task-date";
 
 export type Collection = {
   id: string; title: string; url: string; state: string; status: string; error?: string;
   total: number; selected: number; pending: number; running: number; queued: number;
   completed: number; failed: number; cancelled: number; paused: number; progress: number; speed_bytes: number;
+  created_at?: string;
 };
 type Props = {
   collections: Collection[]; mode: "download" | "library"; filter: string;
@@ -107,6 +109,7 @@ function CollectionGroup({ group, mode, filter, focus, onUpdate, onShare, onSave
       <button type="button" className="collection-folder" onClick={() => setExpanded((value) => !value)} aria-label={`${expanded ? "收起" : "展开"} ${group.title}`} aria-expanded={expanded}>▰</button>
       <div className="collection-main"><button className="collection-title" type="button" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>{group.title}</button>
         <p>{group.total} 集 · 已完成 {group.completed} / {group.selected || group.total} 集{group.selected > 0 && group.selected < group.total ? `（已选 ${group.selected} 集）` : ""}{group.running > 0 ? ` · 下载中 ${group.running} 集 · ${speedLabel(group.speed_bytes)}` : ""}{group.failed > 0 ? ` · 失败 ${group.failed} 集` : ""}</p>
+        <TaskDate value={group.created_at} />
         <div className="progress collection-progress"><i style={{ width: `${group.progress}%` }} /></div>
       </div><span className={`collection-status ${group.status}`}>{labels[group.status] || group.status}{group.selected > 0 && group.status !== "resolving" ? ` · ${group.progress}%` : ""}</span>
     </div>
@@ -126,7 +129,7 @@ function CollectionGroup({ group, mode, filter, focus, onUpdate, onShare, onSave
         const missingFile = entry.status === "completed" && entry.file_available === false;
         return <div className="collection-episode" key={entry.id}>
         <span className="collection-index">{mode === "download" && entry.status === "pending" && canStart ? <input type="checkbox" aria-label={`选择 ${entry.title}`} checked={selected.has(entry.id)} onChange={(event) => setSelected((current) => { const next = new Set(current); if (event.target.checked) next.add(entry.id); else next.delete(entry.id); return next; })} /> : entry.collection_index}</span>
-        <div className="collection-episode-main"><h4>{entry.collection_index}. {entry.title}</h4><p>{missingFile ? "文件已删除或移走，可重新下载" : entry.error || [entry.speed, entry.eta ? `剩余 ${entry.eta}` : ""].filter(Boolean).join(" · ") || labels[entry.status]}</p>{entry.status === "running" && <div className="progress"><i style={{ width: `${entry.progress}%` }} /></div>}</div>
+        <div className="collection-episode-main"><h4>{entry.collection_index}. {entry.title}</h4><p>{missingFile ? "文件已删除或移走，可重新下载" : entry.error || [entry.speed, entry.eta ? `剩余 ${entry.eta}` : ""].filter(Boolean).join(" · ") || labels[entry.status]}</p><TaskDate value={entry.created_at} />{entry.status === "running" && <div className="progress"><i style={{ width: `${entry.progress}%` }} /></div>}</div>
         <span className={`collection-episode-status ${missingFile ? "missing" : entry.status}`}>{missingFile ? "文件不存在" : entry.status === "running" ? `${entry.progress}%` : labels[entry.status]}</span>
         <div className="history-actions">
           {entry.status === "completed" && entry.media_available && <><Link className="media-play" href={`/media/play/${encodeURIComponent(entry.id)}`} prefetch={false} aria-label={`播放 ${entry.title}`} title="播放">▶</Link><button type="button" className="media-share" onClick={() => onShare(entry)} aria-label={`分享 ${entry.title}`} title="分享">↗</button></>}
